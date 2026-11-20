@@ -11,13 +11,6 @@
 6. 不需要预装 MCP、API 密钥或模型服务。只有用户需要 Word 导出时，才按 README 安装 `requirements-docx.txt` 中的可选依赖。
 7. 回报安装绝对路径、版本、验证结果和调用示例。提示按宿主要求重新加载技能或开启新会话。安装本身不启动剧本创作任务。
 
-## Codex 自带安装器
+## Codex 安装注意事项
 
-若当前 Codex 提供 skill-installer，也可使用其脚本（脚本路径以宿主实际安装为准）：
-
-```bash
-python3 /path/to/skill-installer/scripts/install-skill-from-github.py \
-  --repo zhibolingxi/drama-clone --path . --name drama-clone --method git
-```
-
-这里显式使用 Git 模式，避免部分环境的 ZIP 下载通道出现 SSL 错误；不要禁用 TLS 校验。安装器输出为技能副本，不包含 `.git`；后续更新遵循宿主安装器流程，先保留本地修改。
+本仓库的技能位于根目录。请使用上面的完整 `git clone` 方式；某些版本的 skill-installer 在 Git 稀疏检出模式下使用 `--path .` 会只复制根目录文件，遗漏 `scripts/`、`references/` 和 `templates/`。不能仅凭安装器的成功提示或 SKILL.md 存在判断安装完成，必须执行第 4、5 步。
