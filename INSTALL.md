@@ -17,7 +17,7 @@
 
 ```bash
 python3 /path/to/skill-installer/scripts/install-skill-from-github.py \
-  --repo zhibolingxi/drama-clone --path . --name drama-clone
+  --repo zhibolingxi/drama-clone --path . --name drama-clone --method git
 ```
 
-该方式通常安装下载副本，不包含 `.git`；后续更新遵循宿主安装器流程，先保留本地修改。
+这里显式使用 Git 模式，避免部分环境的 ZIP 下载通道出现 SSL 错误；不要禁用 TLS 校验。安装器输出为技能副本，不包含 `.git`；后续更新遵循宿主安装器流程，先保留本地修改。
