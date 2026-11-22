@@ -1,6 +1,6 @@
 # drama-clone · 短剧高仿裂变
 
-从逐集拉片、剧情和字幕中提取抽象节拍与台词结构，创作表达全新的短剧，并检查节拍对齐、原剧指纹词、字面重复、字数和制作规则。当前技能版本：**1.1.0**。
+从逐集拉片、剧情和字幕中提取抽象节拍与台词结构，创作表达全新的短剧，并检查节拍对齐、原剧指纹词、字面重复、字数和制作规则。当前技能版本：**1.2.0**。
 
 ## 复制链接给 Agent 安装
 
@@ -46,6 +46,7 @@ git clone https://github.com/zhibolingxi/drama-clone.git "$HOME/.workbuddy/skill
 
 ```bash
 python3 scripts/clone_check.py --help
+python3 scripts/clone_check.py next --project /path/to/项目 --range 1-14   # 每一步先问它下一步做什么
 python3 scripts/clone_check.py voice /path/to/正文.md --min-total 800 --max-tics 0
 python3 scripts/clone_check.py rules /path/to/正文.md
 ```
@@ -65,7 +66,7 @@ python3 -m venv .venv
 - `SKILL.md`：技能入口与工作流。
 - `references/`：节拍、台词结构、裂变、制作、编排和格式规则。
 - `templates/`：提取、写作、修订任务书。
-- `scripts/clone_check.py`：七类检查与合成命令。
+- `scripts/clone_check.py`：流程导航（`next`）、骨架生成（`source`/`scaffold`/`cast`/`brief`）、逐集快检（`check`）和各项单独检查。
 - `scripts/to_docx.py`：Word 导出。
 - `INSTALL.md`：面向安装 Agent 的操作说明。
 

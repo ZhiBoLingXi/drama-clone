@@ -4,7 +4,7 @@
 
 ## 从哪拿
 
-`api_get /api/v1/user-templates/<id>/episodes/<n>/evidence` 返回的 `rawMd` 里有 Storyline（按时间码的剧情）和 Visible Text（逐条字幕）。字幕常常只存到半集，后半段按 Storyline 的转述推，在图里注明哪些时段是推的。
+拉片模板每集的 `rawMd`（按集窗口取，见 SKILL.md「输入从哪来」）里有 Storyline（按时间码的剧情）和 Visible Text（逐条字幕）。字幕常常只存到半集，后半段按 Storyline 的转述推，在图里注明哪些时段是推的。
 
 ## 每拍记什么
 

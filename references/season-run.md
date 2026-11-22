@@ -4,8 +4,8 @@
 
 ## 1. 提取原剧
 
-- 模板整份太大，`get_deconstruction_template` 和 `api_get /user-templates/<id>` 都会报 `MCP_RESPONSE_TOO_LARGE`。**逐集拿**：`api_get /api/v1/user-templates/<id>/episodes/<n>/evidence`（mali-story；其他平台按它自己的逐集接口），返回 `rawMd`（Storyline 加 Visible Text）和 `episodeOutlineMd`。字幕常常只存到半集，后半段按 Storyline 推，并标注“推”。
-- 每个子代理负责 **10 集左右**，按 `templates/EXTRACT.md` 执行，每集写 3 个文件：`source/ep-NNN.txt`、`beats/ep-NNN.json`、`dialogue/ep-NNN.md`。
+- 模板整份太大，不要一次取全。**按集窗口拿**：`get_deconstruction_template` 带 `include: ["rawMd", "outlineMd"]` 和 `episode_from`/`episode_to`，每窗最多 10 集，结果存成 `extract/raw/win-NN.json`（mali-story v0.22.0 起；做法见 SKILL.md「输入从哪来」）。个人库模板也可以逐集调 `get_deconstruction_evidence`；其他平台按它自己的逐集接口。每集都会带 `rawMd`（Storyline 加 Visible Text）和集纲。字幕常常只存到半集，后半段按 Storyline 推，并标注“推”。
+- 主线程先跑 `clone_check.py source` 落出逐集原文和 manifest。每个子代理负责 **10 集左右**，按 `templates/EXTRACT.md` 执行，每集写 2 个文件：`beats/ep-NNN.json`、`dialogue/ep-NNN.md`。
 - **任务书里必须写两条硬规则：不许再派子代理；只写自己负责的集数，不许删除或改动任何其他文件。** 实测出过事：一个子代理把别人写好的“越界文件”当垃圾清掉，第 4-79 集全部丢失，只能重跑。嵌套派出去的子代理状态也看不见，没法管。
 - 提取完跑：
   ```bash

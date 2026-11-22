@@ -18,7 +18,7 @@ def run(p,text,bold=False):
 first=True; n_ep=0
 for line in open(src,encoding='utf-8').read().splitlines():
     line=line.rstrip()
-    if not line: continue
+    if not line or line.startswith('<!--'): continue  # 骨架里的对位注释不进成稿
     if line.startswith('# 《'):
         p=doc.add_paragraph(style='Title'); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; run(p,line[2:],True); continue
     if line.startswith('## '):
@@ -38,7 +38,7 @@ for line in open(src,encoding='utf-8').read().splitlines():
     else:
         m=re.match(r'^([^：（]{1,20})((?:（[^）]*）)?)：(.*)$',line)
         if m:
-            run(p,m.group(1),True);
+            run(p,m.group(1),True); 
             if m.group(2): run(p,m.group(2))
             run(p,'：'+m.group(3))
         else: run(p,line)
