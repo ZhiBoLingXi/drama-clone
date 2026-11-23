@@ -17,6 +17,7 @@
 - **一集写完立刻跑 `check`**，把 `fix` 里每一条改掉，过了再写下一集：
   `python3 {技能目录}/scripts/clone_check.py check {正文骨架} --extract extract --sheet beats-all.json --impl {实现表骨架} --min-total {全文字数下限}`
 - 实现表骨架里的「原剧钩子」已填好，你补「新剧钩子」，每拍一行写怎么演。
+- **出场照任务单的「本集出场」**。要多加人，在实现表这一集写「加人：名字 — 理由」；有人离开写「离场：名字 — 原因」；离场的人再出现先写「回归：名字 — 怎么回来的」。规则见 `references/production-rules.md`「出场逻辑」，`check` 会查。
 
 ## 先读（按顺序）
 1. `bible.md`：设定圣经，包括人物小传。

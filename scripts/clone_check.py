@@ -10,6 +10,7 @@
   clone_check.py dup <新稿.md> <原剧语料.txt> [--k 8]
   clone_check.py build <extract目录> <beat-sheet.json> --out-beats beats-all.json --out-fp fingerprints-all.json
   clone_check.py gate <正文.md> --extract extract/ --sheet beats-all.json --impl 实现表.md [--pair-out 对照.md]
+  clone_check.py presence <正文.md> --extract extract/ --sheet beats-all.json [--impl 实现表.md]
 
 退出码：0 通过；1 输入错误；2 有违反项。输出为 JSON。
 """
@@ -402,6 +403,144 @@ def cmd_rules(args):
     return 0 if report["passed"] else 2
 
 
+CAST_LINE = re.compile(r"^人物\s*[:：](.*)")
+EXIT_ACT = re.compile(r"(离开|走出(?:门|屋|院|去)|出了(?:门|屋|院)|摔门而去|扬长而去|转身离开|转身出(?:门|去)|走远了|"
+                      r"下山去了|挂(?:断|了)电话|跑出(?:门|去)|走了出去|退了出去|出门去了)")
+ENTER_ACT = re.compile(r"(进来|进了|走进|回来|回到|推门|跑回|折回|又进|闯进|冲进|追进|跟进)")
+OFFSCREEN = re.compile(r"画外|电话|话筒|喊声|远处|门外|窗外|录音|广播|信里")
+IMPL_DECL = re.compile(r"^\s*[-*]?\s*(加人|离场|回归)\s*[:：]\s*([^\s—–\-:：（(]+)\s*(?:[—–\-:：（(]+\s*(.*?))?\s*[）)]?\s*$", re.M)
+
+
+def _cast_names(spec):
+    return {x for x in re.split(r"[\s、，,]+", spec) if x}
+
+
+def _decls(impl_text):
+    """实现表里的出场声明：加人/离场/回归，每条要写理由。"""
+    out = []
+    for m in IMPL_DECL.finditer(impl_text):
+        out.append({"kind": m.group(1), "who": m.group(2), "why": (m.group(3) or "").strip()})
+    return out
+
+
+def presence_model(extract, sheet, impl_eps):
+    """每集的新剧名册（原剧在场的人照选角表换名）和离场时间线（原剧离场 + 实现表声明）。"""
+    mpath = os.path.join(extract, "manifest.json")
+    manifest = load_sheet(mpath) if os.path.exists(mpath) else {"episodes": {}}
+    cpath = os.path.join(extract, "cast.json")
+    cast = load_sheet(cpath) if os.path.exists(cpath) else {}
+    sheet_eps = {e["ep"]: e for e in sheet.get("episodes", [])}
+
+    def new(name):
+        return cast.get(name) or cast.get(PAREN_NAME.sub("", name).strip()) or ""
+
+    roster, events = {}, {}
+    for n in sorted(set(sheet_eps) | {int(k) for k in manifest["episodes"]}):
+        src = manifest["episodes"].get(str(n), {})
+        e = sheet_eps.get(n, {})
+        names = set(src.get("speakers", [])) | set(src.get("mentioned", [])) | set(e.get("onScreen", []))
+        for b in e.get("beats", []):
+            names |= set(b.get("roles", []))
+        roster[n] = {new(x) for x in names} - {""}
+        for kind, key in (("离场", "exits"), ("回归", "returns")):
+            for x in e.get(key, []):
+                who = new(x.get("who", ""))
+                if who:
+                    events.setdefault(n, []).append({"kind": kind, "who": who, "why": x.get("why") or x.get("how") or "原剧",
+                                                     "from": "原剧"})
+    for n, body in impl_eps.items():
+        for d in _decls(body):
+            if d["kind"] != "加人":
+                events.setdefault(n, []).append({**d, "from": "实现表"})
+    return roster, events
+
+
+def gone_before(events, upto):
+    """第 upto 集开拍时谁处在离场状态：{人: (离场集, 原因)}。离场从下一集起生效，回归当集生效。"""
+    gone = {}
+    for n in sorted(k for k in events if k <= upto):
+        for ev in events[n]:
+            if ev["kind"] == "回归":
+                gone.pop(ev["who"], None)
+            elif n < upto:
+                gone[ev["who"]] = (n, ev["why"])
+    return gone
+
+
+def scan_scenes(text):
+    """场内：说话人不在本场人物表；离场后没写回来又开口。画外音、电话里的声音不算在场。"""
+    problems, spoken = [], set()
+    scene, cast, gone = None, set(), {}
+    for l in text.splitlines():
+        st = l.strip()
+        if st.startswith("场") and re.match(r"场\d", st):
+            scene, cast, gone = st.split()[0], set(), {}
+            continue
+        m = CAST_LINE.match(st)
+        if m:
+            cast = _cast_names(m.group(1))
+            spoken |= cast
+            continue
+        if st.startswith("△"):
+            for c in cast:
+                for k in EXIT_ACT.finditer(st):
+                    pre = st[:k.start()]
+                    if c in pre[-10:] and not re.search(r"[，。；！？]", pre[pre.rfind(c):]):
+                        gone[c] = st[:30]
+                for k in ENTER_ACT.finditer(st):
+                    if c in st[:k.start()][-10:]:
+                        gone.pop(c, None)
+            continue
+        m = SPEECH.match(l)
+        if not (m and scene):
+            continue
+        who = m.group(1).strip()
+        spoken.add(who)
+        if OFFSCREEN.search(m.group(2) or ""):
+            continue
+        if cast and who not in cast:
+            problems.append(f"{scene} {who} 开口了，但不在本场「人物：」里：补进人物行，或改成画外音")
+        if who in gone:
+            problems.append(f"{scene} {who} 已经离场（{gone[who]}），后面又开口：先写他回来，或删掉这句")
+    return problems, spoken
+
+
+def cmd_presence(args):
+    """出场逻辑闸门：场内在场一致；每集出场对得上原剧名册，名册外的人要在实现表写「加人：名字 — 理由」；
+    离场的人回来要写「回归：名字 — 怎么回来的」。"""
+    sheet = load_sheet(args.sheet)
+    with open(args.draft, encoding="utf-8") as f:
+        draft = split_episodes(f.read())
+    impl = {}
+    if args.impl:
+        import glob
+        # 前面批次的实现表里写过的离场/回归也要算，同目录的 impl-*.md 一起读
+        for p in sorted(set(glob.glob(os.path.join(os.path.dirname(args.impl) or ".", "impl-*.md"))) | {args.impl}):
+            if os.path.exists(p):
+                with open(p, encoding="utf-8") as f:
+                    for n, body in split_episodes(f.read()).items():
+                        impl[n] = impl.get(n, "") + "\n" + body
+    roster, events = presence_model(args.extract, sheet, impl)
+    problems = []
+    for n in sorted(draft):
+        scene_problems, here = scan_scenes(draft[n])
+        problems += [f"第{n}集 {p}" for p in scene_problems]
+        decls = _decls(impl.get(n, ""))
+        added = {d["who"]: d["why"] for d in decls if d["kind"] == "加人"}
+        problems += [f"第{n}集实现表「{d['kind']}：{d['who']}」没写理由" for d in decls if not d["why"]]
+        if roster.get(n):
+            for who in sorted(here - roster[n] - set(added)):
+                problems.append(f"第{n}集 {who} 出场了，原剧这集没有对应的人：要留就在实现表写「加人：{who} — 理由」，否则删掉")
+        for who, (since, why) in sorted(gone_before(events, n).items()):
+            if who in here:
+                problems.append(f"第{n}集 {who} 第{since}集已离场（{why}），这集又出场：实现表写「回归：{who} — 怎么回来的」，或删掉")
+    report = {"problems": problems, "passed": not problems,
+              "rosterMissing": not any(roster.values()),
+              "note": "名册来自 manifest 的说话人和剧情提到的人、节拍的 roles/onScreen，经 cast.json 换成新剧名"}
+    print(json.dumps(report, ensure_ascii=False, indent=1))
+    return 0 if not problems else 2
+
+
 GENERIC_ROLES = set("""中年妇女 二叔 二舅妈 兄长 劝架妇女 受伤青年 同伙 同伴青年 后妈 继母 商人 壮汉 外婆 外公 大叔 大夫
 大婶 大舅妈 女店员 女村民 女职员 妹妹 弟弟 哥哥 姐姐 师傅 干部 年轻女子 年长女子 店主 店员 少年 少女 支书 村民 村长
 母亲 父亲 老人 老者 青年 经理 门卫 舅舅 舅妈 姥姥 大舅 二舅 表哥 表弟 儿媳 线人 领袖 奶奶 爷爷""".split())
@@ -423,7 +562,8 @@ def cmd_build(args):
         n = j["ep"]
         with open(p, "rb") as f:
             sources.append({"file": os.path.basename(p), "sha1": hashlib.sha1(f.read()).hexdigest()[:12]})
-        eps[n] = {"ep": n, "beats": j["beats"], "hook": j.get("hook", ""), "climax": bool(j.get("climax"))}
+        eps[n] = {"ep": n, "beats": j["beats"], "hook": j.get("hook", ""), "climax": bool(j.get("climax")),
+                  "onScreen": j.get("onScreen", []), "exits": j.get("exits", []), "returns": j.get("returns", [])}
         render_dialogue_map(args.extract, n, j)
         terms = [t for t in j.get("fingerprints", []) if isinstance(t, str) and 4 <= len(t) <= 30]
         fps.append({"id": f"F-E{n}", "kind": "其他", "episodes": [n], "terms": terms})
@@ -573,7 +713,7 @@ def cmd_source(args):
         print(json.dumps({"error": "没找到逐集数据（带 rawMd 的列表）"}, ensure_ascii=False))
         return 1
     os.makedirs(os.path.join(args.out, "source"), exist_ok=True)
-    eps, names, corpus = {}, set(), []
+    eps, names, corpus, texts = {}, set(), [], {}
     for it in items:
         n = int(it["episodeIndex"])
         raw, outline = it.get("rawMd") or "", it.get("outlineMd") or ""
@@ -592,9 +732,12 @@ def cmd_source(args):
         with open(os.path.join(args.out, "source", f"ep-{n:03d}.txt"), "w", encoding="utf-8") as f:
             f.write("\n".join(body))
         corpus.append("\n".join(t["line"] for t in info["turns"]) + "\n" + story)
+        texts[n] = outline + "\n" + story
         eps[n] = {"durationSec": info["durationSec"], "turns": len(info["turns"]),
                   "speechHan": info["speechHan"], "hookSrc": info["hookSrc"],
                   "speakers": sorted({t["speaker"] for t in info["turns"]})}
+    for n, text in texts.items():  # 剧情里提到、但这集不说话的人，也算在场
+        eps[n]["mentioned"] = sorted(nm for nm in names if nm in text)
     total = total or max(eps)
     manifest = {"total": total, "present": sorted(eps), "gaps": [i for i in range(1, total + 1) if i not in eps],
                 "names": sorted(names), "episodes": {str(k): eps[k] for k in sorted(eps)}}
@@ -771,7 +914,17 @@ def cmd_brief(args):
     fp = sorted(fingerprint_terms(sheet, manifest))
     brief, skel, impl = [f"# 写作任务单 第{rng[0]}-{rng[-1]}集", "",
                          "每一拍都按下表写：轮次数和说话顺序对上，每句话自己写，不翻译原句。写完一集立刻跑 `check`，过了再写下一集。", "",
-                         f"**这一批不许出现的词**：{'、'.join(fp[:60])}", ""], [], []
+                         f"**这一批不许出现的词**：{'、'.join(fp[:60])}", "",
+                         "**出场规则**：每集只用「本集出场」里的人。要多加一个人，在实现表这一集写「加人：名字 — 理由」；"
+                         "有人离开（进城、入狱、搬走、去世），写「离场：名字 — 原因」；离场的人再出现，先写「回归：名字 — 怎么回来的」。"
+                         "开口的人必须在本场「人物：」行里；离场后没写回来不能再开口；电话、画外音在括注里标明。", ""], [], []
+    import glob
+    prior = {}
+    for p in sorted(glob.glob(os.path.join(args.out, "impl-*.md"))):
+        with open(p, encoding="utf-8") as f:
+            for k, body in split_episodes(f.read()).items():
+                prior[k] = prior.get(k, "") + "\n" + body
+    roster, events = presence_model(args.extract, sheet, prior)
     for n in rng:
         src = manifest["episodes"].get(str(n))
         if not src or n not in eps:
@@ -792,6 +945,9 @@ def cmd_brief(args):
                      if cap and src["speechHan"] > cap else ""),
                   "- 每一轮括号里是原剧这句的字数，新句子照这个长度写，单句不超过 20 字。不写外貌、不写画面，龙套用唯一称呼。",
                   f"- **原剧钩子**：{src['hookSrc']}",
+                  f"- **本集出场**（照原剧映射）：{'、'.join(sorted(roster.get(n, set()))) or '（选角表没填，先跑 cast 填好）'}",
+                  *([f"- **已离场，不能出场**：" + "；".join(f"{w}（第{s}集起，{y}）" for w, (s, y) in sorted(gone_before(events, n).items()))]
+                    if gone_before(events, n) else []),
                   f"- **只写本集的拍**，下一集的戏不提前。", "",
                   "| 拍 | 功能 | 轮次 | 说话顺序（新剧人名） | 作用 / 手法 |", "|---|---|---|---|---|"]
         skel.append(f"# 第{cn_num(n)}集\n")
@@ -863,6 +1019,8 @@ def cmd_check(args):
     out += [f"第 {x['line']} 行写了外貌「{x['term']}」，删掉（形象以资产为准）：{x['text']}" for x in r.get("appearance", [])]
     out += [f"第 {x['line']} 行不是标准剧本行：{x['text']}" for x in r.get("format", [])]
     out += [f"龙套「{x['name']}」（第 {x['line']} 行）换成全季唯一的固定称呼" for x in r.get("genericNames", [])]
+    _, pr = _run(cmd_presence, draft=args.draft, extract=ex, sheet=sh, impl=args.impl)
+    out += pr.get("problems", [])
     _, fpr = _run(cmd_fingerprint, sheet=sh, draft=args.draft, ignore=None,
                   manifest=os.path.join(ex, "manifest.json"))
     out += [f"指纹「{h['term']}」第{h['ep']}集：{h['context']}" for h in fpr.get("hits", [])]
@@ -973,6 +1131,11 @@ def main():
     p.add_argument("--impl")
     p.add_argument("--min-total", type=int)
     p.add_argument("--sec", type=int, help="单集时长上限（秒）；不给就只和原剧比（不超过原剧口播的 1.3 倍）")
+    p = sub.add_parser("presence", help="出场逻辑：场内在场一致、每集出场对原剧名册、离场后回来要交代")
+    p.add_argument("draft")
+    p.add_argument("--extract", required=True)
+    p.add_argument("--sheet", required=True)
+    p.add_argument("--impl", help="实现表；同目录的 impl-*.md 会一起读，用来认「加人/离场/回归」声明")
     p = sub.add_parser("source", help="把拉片模板落成逐集原文 + manifest + 查重语料")
     p.add_argument("input", help="整份模板 JSON，或逐集 evidence JSON 所在目录")
     p.add_argument("--out", required=True, help="extract 目录")
@@ -1025,7 +1188,7 @@ def main():
         return {"sheet": cmd_sheet, "align": cmd_align, "fingerprint": cmd_fingerprint, "voice": cmd_voice,
                 "rules": cmd_rules, "dup": cmd_dup, "build": cmd_build,
                 "source": cmd_source, "gate": cmd_gate, "next": cmd_next, "scaffold": cmd_scaffold,
-                "cast": cmd_cast, "brief": cmd_brief, "check": cmd_check}[args.cmd](args)
+                "cast": cmd_cast, "brief": cmd_brief, "check": cmd_check, "presence": cmd_presence}[args.cmd](args)
     except (OSError, ValueError, KeyError) as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
         return 1

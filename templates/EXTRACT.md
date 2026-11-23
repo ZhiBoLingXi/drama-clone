@@ -25,6 +25,9 @@ manifest 里列为缺集的集，你负责的范围里也照样缺，不要编�
  "moneyAndAssets":"主角本集得失的钱、物、身份，带数字",
  "stateAfter":"本集结束时谁知道了什么、关系怎么变、哪条线没收",
  "newCharacters":[{"sourceName":"原名","function":"剧中功能"}],
+ "onScreen":["本集在场的原剧人物，含不说话的（照 Storyline 和字幕判断）"],
+ "exits":[{"who":"原名","why":"本集离开故事主场景：进城、入狱、搬走、去世、出远门"}],
+ "returns":[{"who":"原名","how":"之前离场、本集回来，怎么回来的"}],
  "fingerprints":["本集的专名、标志道具、口头禅、有辨识度的原句（照抄）"]}
    每集 4-8 个 beat，按剧情顺序写。写完用 python3 -c 'import json;json.load(open("文件"))' 校验。
    `hook` 对着 manifest 里这一集的 hookSrc 抽象，不许另起一个钩子。

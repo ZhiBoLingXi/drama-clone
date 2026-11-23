@@ -19,7 +19,7 @@ metadata:
   - Give me three different settings that follow this drama's episode beats
   - 'Revise per client notes: max 4 speakers per scene, short lines, add character
     bios'
-  version: 1.2.1
+  version: 1.3.0
   author: MaLiAI
 ---
 
@@ -141,6 +141,8 @@ python3 $S gate 正文.md --extract extract --sheet beats-all.json --impl 实现
                                                         # 前置产物齐、台词量不低于原剧 70%/口播 60%、钩子已对位；不过退出码 2
 python3 $S voice 正文.md --min-total 800 --max-tics 0 --max-run 3   # 全文/口播字数、括注套路、AI 腔、同一人连说行数
 python3 $S rules 正文.md                                # 说话人数、单句长度；项目要求句句带括注时加 --require-annotation
+python3 $S presence 正文.md --extract extract --sheet beats-all.json --impl 实现表.md
+                                                        # 出场逻辑：开口的人在本场人物行、离场没写回来不再开口、每集出场对原剧名册
 python3 $S fingerprint fingerprints-all.json 正文.md --manifest extract/manifest.json   # 含人物小传；人名自动补去姓变体
 python3 $S dup 正文.md extract/corpus.txt --k 8         # 再跑一次 --k 6
 ```
