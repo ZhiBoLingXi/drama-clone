@@ -169,7 +169,8 @@ python3 $S fingerprint fingerprints-all.json 正文.md --manifest extract/manife
 python3 $S dup 正文.md extract/corpus.txt --k 8         # 再跑一次 --k 6
 ```
 
-- **`gate` 管不到的，要人看**：钩子的意思像不像原剧、每一轮台词的作用对不对、有没有人味。`--pair-out` 出一张原剧/新剧逐句对照表，交付时一起给用户，或者交给 DramaReview 评一遍。
+- **`gate` 管不到的，要人看**：钩子的意思像不像原剧、每一轮台词的作用对不对、有没有人味。`--pair-out` 出一张原剧/新剧逐句对照表，交付时一起给用户。
+- **交付前跑一遍 drama-review**（`~/dev/skills/drama-review`）：`review.py init 合并稿.md --profile clone --min-total <下限> --out review/ --bible bible.md`，照 `next` 逐集写审查卡，出 `审查报告.md`。`clone` 类型已经避开了高仿会被误伤的两条（≥1200 字、≥10 场），报告里的「下限·必改」就是改稿清单。
 
 - 用户问“每集多少字”，拿 `progress` 或 `voice` 的输出回答，不要估。
 - `twoPartParenRatio` 高于 0.7、或者 `aiTics` 不为空，说明台词在套公式或者混进了文学腔，对着 `references/anti-ai.md` 改。
