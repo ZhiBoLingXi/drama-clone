@@ -1257,7 +1257,13 @@ def cmd_next(args):
     if not sh.get("passed"):
         return say("1 提取", "节拍表没过，按下面逐条改 beats/ep-NNN.json，改完重新 build。不许改 gaps 凑通过。",
                    {"problems": sh.get("problems")})
-    for f, step, todo in (("bible.md", "2 外壳", "你先自己出 3 个外壳候选（只写概念，做金手指能力对位），然后停下来给用户选。用户选定后你写 bible.md。"),
+    if not os.path.exists(os.path.join(P, "bible.md")) and not market_ready(P):
+        hr = os.path.join(os.path.dirname(me), "hot_rank.py")
+        return say("2 选题灵感", "出外壳之前，先抓红果热播榜看现在什么题材、设定、标题句式在热。跑下面的命令，读它生成的 market/hot-YYYYMMDD.md。"
+                   "脚本联不了网就照它的提示处理，不要凭记忆编榜单。",
+                   f"python3 {hr} --out {os.path.join(P, 'market')}")
+    for f, step, todo in (("bible.md", "2 外壳", "你先读 market/ 里最新的热播榜摘要，再自己出 3 个外壳候选（只写概念，做金手指能力对位，"
+                           "每个候选写一行「榜单依据」），然后停下来给用户选。用户选定后你写 bible.md。"),
                           ("season-map.md", "3 地图", "写全季实现地图 season-map.md。")):
         if not os.path.exists(os.path.join(P, f)):
             return say(step, todo)
@@ -1309,7 +1315,22 @@ def cmd_next(args):
                f"python3 {me} gate <合并稿> --extract {ex} --sheet {ba} --pair-out 对照.md")
 
 
-WHO_AGENT = "你（AI）自己做，不要交给用户：照 todo 做完，马上再跑 next，一直做到下一个需要用户拍板的步骤"
+MARKET_TTL_DAYS = 7  # 榜单一周内的算新；抓不到写过 unavailable.txt 的，当天不再催
+
+
+def market_ready(P):
+    """出外壳前要有一份一周内的热播榜摘要，或者一份当天的「抓不到」说明。"""
+    import glob
+    import time
+    d = os.path.join(P, "market")
+    now = time.time()
+    if any(now - os.path.getmtime(p) < MARKET_TTL_DAYS * 86400 for p in glob.glob(os.path.join(d, "hot-*.md"))):
+        return True
+    u = os.path.join(d, "unavailable.txt")
+    return os.path.exists(u) and now - os.path.getmtime(u) < 86400
+
+
+WHO_AGENT ="你（AI）自己做，不要交给用户：照 todo 做完，马上再跑 next，一直做到下一个需要用户拍板的步骤"
 WHO_USER = "停下来找用户：把结果给用户看，等用户拍板再继续"
 VOLUME = 10  # 正文每 10 集一卷，卷首提示开新会话：上下文越攒越长，每一轮都要重读，越写越贵越慢
 

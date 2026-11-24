@@ -41,6 +41,7 @@ flatten dist/build/drama-clone/SKILL.md
 flatten workbuddy/skills/drama-clone/SKILL.md
 
 python3 -B scripts/clone_check.py --help >/dev/null  # 脚本跑不起来就不打包
+python3 -B scripts/hot_rank.py --help >/dev/null
 
 (cd dist/build && rm -f "../drama-clone-v$ver.zip" && zip -qr "../drama-clone-v$ver.zip" drama-clone)
 [ -f workbuddy/avatars/expert.png ] || echo "提醒：workbuddy/avatars/expert.png 还没有，专家包上架前要补" >&2

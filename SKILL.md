@@ -19,7 +19,7 @@ metadata:
   - Give me three different settings that follow this drama's episode beats
   - 'Revise per client notes: max 4 speakers per scene, short lines, add character
     bios'
-  version: 1.6.1
+  version: 1.7.0
   author: MaLiAI
 ---
 
@@ -117,7 +117,8 @@ python3 <技能目录>/scripts/clone_check.py progress --project <项目目录> 
 - **闸门**：`sheet` 没过，不进第 2 步。
 
 ### 2 · 裂变外壳（人审）
-- 按 `references/fission.md` 出 3 个外壳候选：地域行业、主角身份、底牌形式、关系载体，四轴至少换三轴。
+- **先抓热播榜**：`python3 scripts/hot_rank.py --out <项目目录>/market`，抓红果短剧热播榜（https://hongguoduanju.com/rank/hot-drama），写出 `market/hot-YYYYMMDD.md`：题材和形式分布、上榜的续季、每部剧一行。`next` 会在出外壳前要求一份一周内的榜单。宿主不让脚本联网时，用自己的网页工具存下页面 HTML，再跑 `--html <文件>`；两条路都不通，就在 `market/unavailable.txt` 写一句原因、告诉用户，接着出外壳。**不要凭记忆编榜单。**
+- 按 `references/fission.md` 出 3 个外壳候选：地域行业、主角身份、底牌形式、关系载体，四轴至少换三轴。每个候选写一行「榜单依据」：借了榜上第几名的哪种设定元素或标题句式，或者为什么故意避开榜上扎堆的题材。榜上的剧名、人名、具体桥段不用，那是别人的作品。
 - 每个候选都要做**金手指能力对位**：原剧前 15 集每次用金手指办成的事，新外壳都要办得成。超自然换成纯技艺最容易塌。
 - 候选只写概念，**不写样稿场景和台词**。
 - **选外壳时就查伦理风险**：避开“后妈、继兄、亲爹苛待亲儿子”这类重组家庭设定，改用叔伯、寄养、姑舅关系（见 `references/production-rules.md`）。
