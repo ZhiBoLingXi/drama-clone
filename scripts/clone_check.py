@@ -928,7 +928,8 @@ def cmd_brief(args):
     rng = parse_range(args.range)
     fp = sorted(fingerprint_terms(sheet, manifest))
     head = ["每一拍都按下表写：轮次数和说话顺序对上，每句话自己写，不翻译原句。写完立刻跑 `check`，过了再要下一集。", "",
-            "**一次只写这一集。** 只读下面「要读的」几样，不回头读前面几集的正文，上一集的结尾状态已经写在本单里。"
+            "**一次只写这一集，只读这一份任务包。** 圣经里本集要用的人物、地图里本集的分段、样集、写作规则都附在后面，"
+            "不用再去读 bible.md、season-map.md、references/，也不回头读前面几集的正文，上一集的结尾状态已经写在本单里。"
             "整集写完，不许用「略」「同上」「此处省略」「以此类推」代替任何一段戏，`check` 会拦。", "",
             f"**不许出现的词**：{'、'.join(fp[:60])}", "",
             "**出场规则**：每集只用「本集出场」里的人。要多加一个人，在实现表这一集写「加人：名字 — 理由」；"
@@ -972,7 +973,11 @@ def cmd_brief(args):
                   *([f"- **已离场，不能出场**：" + "；".join(f"{w}（第{s}集起，{y}）" for w, (s, y) in sorted(gone_before(events, n).items()))]
                     if gone_before(events, n) else []),
                   f"- **只写本集的拍**，下一集的戏不提前。",
-                  "- **要读的**：bible.md、season-map.md 里本集所在的分段和交接状态、定稿样集、本单、骨架。别的不读。", "",
+                  f"- **写进**：正文 `{os.path.join(args.out, f'draft-{n:03d}.md')}`（骨架已在，照下表每拍一个注释槽填），"
+                  f"实现表 `{os.path.join(args.out, f'impl-{n:03d}.md')}`（补新剧钩子和出口状态）。",
+                  f"- **写完跑**：`python3 {os.path.abspath(__file__)} check {os.path.join(args.out, f'draft-{n:03d}.md')} "
+                  f"--extract {args.extract} --sheet {args.sheet} --impl {os.path.join(args.out, f'impl-{n:03d}.md')}"
+                  + (f" --min-total {args.min_total}" if args.min_total else "") + (f" --sec {args.sec}" if args.sec else "") + "`", "",
                   "| 拍 | 功能 | 轮次 | 说话顺序（新剧人名） | 作用 / 手法 |", "|---|---|---|---|---|"]
         skel = [f"# 第{cn_num(n)}集\n"]
         impl = [f"## 第{n}集", "对标节拍：" + ", ".join(b["id"] for b in j["beats"]),
@@ -990,6 +995,7 @@ def cmd_brief(args):
         skel.append(f"<!-- 钩子｜{j.get('hook', '')} -->\n")  # 用抽象钩子，原剧钩子带人名，留在任务单里
         # 一集一套文件：一次回复只写一集，长批次写到后面才不会缩水、写“略”
         paths = {k: os.path.join(args.out, f"{k}-{n:03d}.md") for k in ("brief", "draft", "impl")}
+        brief += packet_extras(args.out, n, roster.get(n, set()))
         with open(paths["brief"], "w", encoding="utf-8") as f:
             f.write("\n".join(brief) + "\n")
         for k, body in (("draft", skel), ("impl", impl)):
@@ -1002,6 +1008,52 @@ def cmd_brief(args):
                       **({"note": "原剧缺集或未提取，跳过了，告诉用户"} if skipped else {}),
                       "missingCast": sorted(k for k, v in cast.items() if not v)}, ensure_ascii=False))
     return 0
+
+
+SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+RANGE_IN_TEXT = re.compile(r"(\d+)\s*[-–~～至到]\s*(\d+)\s*集")
+
+
+def _blocks(text):
+    return [b for b in re.split(r"\n\s*\n", text) if b.strip()]
+
+
+def _read(path):
+    if not os.path.exists(path):
+        return ""
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def packet_extras(out, n, names, cap=4000):
+    """任务包附录：写一集要用的东西全附在一份文件里，写手读一次就开写。每多读一个文件就多一轮，每轮都要重读整个上下文。"""
+    P = os.path.dirname(os.path.abspath(out))
+    parts = ["", "---", "", "# 附录（写这一集要用的全在这里）", ""]
+    bible = _read(os.path.join(P, "bible.md"))
+    if bible:
+        keep = bible if len(bible) <= cap else "\n\n".join(b for b in _blocks(bible) if any(x in b for x in names))[:cap]
+        parts += ["## 圣经：本集出场的人" + ("" if len(bible) <= cap else "（只摘了本集出场的人，别的要用再读 bible.md）"), "", keep or bible[:cap], ""]
+    smap = _read(os.path.join(P, "season-map.md"))
+    if smap:
+        if len(smap) <= cap:
+            keep = smap
+        else:
+            secs = re.split(r"(?m)^(?=## )", smap)
+            head = secs[0] + (secs[1] if len(secs) > 1 else "")  # 标题 + 第一节全季对照表：同一元素全季一种换法，每集都要守
+            seg = [b for b in _blocks(smap) if any(int(a) <= n <= int(z) for a, z in RANGE_IN_TEXT.findall(b))]
+            keep = (head[:cap] + "\n\n" + "\n\n".join(seg)[:cap]).strip()
+        parts += ["## 全季地图：对照表和本集所在分段", "", keep, ""]
+    if os.path.exists(os.path.join(P, "approved-sample.txt")):
+        import glob
+        drafts = sorted(p for p in glob.glob(os.path.join(out, "draft-*.md")) if not p.endswith(f"draft-{n:03d}.md"))
+        if drafts:
+            sample = COMMENT.sub("", _read(drafts[0])).strip()
+            parts += ["## 定稿样集（口味基准：台词长短、口音、括注写法、△ 密度照它）", "", sample[:2500], ""]
+    for ref, title in (("script-format.md", "正文格式"), ("anti-ai.md", "去 AI 味"), ("production-rules.md", "制作规则")):
+        body = _read(os.path.join(SKILL_DIR, "references", ref))
+        if body:
+            parts += [f"## 规则：{title}", "", re.sub(r"(?m)^#", "###", body).strip(), ""]
+    return parts
 
 
 EXIT_STATE = re.compile(r"出口状态\s*[:：]\s*(\S.*)")
@@ -1076,7 +1128,11 @@ def cmd_check(args):
         text = f.read()
     empty = re.findall(r"<!-- (E\d+-B\d+)[^\n]*-->\s*\n\s*(?=<!--)", text)
     out += [f"{b} 还没写" for b in empty]
-    print(json.dumps({"passed": not out, "fix": out}, ensure_ascii=False, indent=1))
+    # 只给前 20 条：改完再跑一次就会报剩下的，一次贴几十条只是让每一轮的上下文更长
+    rep = {"passed": not out, "count": len(out), "fix": out[:20]}
+    if len(out) > 20:
+        rep["more"] = f"还有 {len(out) - 20} 条，先改这 20 条再跑"
+    print(json.dumps(rep, ensure_ascii=False, indent=1))
     return 0 if not out else 2
 
 
@@ -1086,10 +1142,12 @@ def cmd_next(args):
     ex = os.path.join(P, "extract")
     me = os.path.abspath(__file__)
 
-    def say(step, todo, cmd=None, model=None, why=None):
+    def say(step, todo, cmd=None, model=None, why=None, session=None):
         r = {"step": step, "todo": todo, "cmd": cmd}
         if model:
             r["model"] = TIER_TEXT[model] + (f"（{'、'.join(why)}）" if why else "")
+        if session:
+            r["session"] = session
         print(json.dumps(r, ensure_ascii=False, indent=1))
         return 0
     mpath = os.path.join(ex, "manifest.json")
@@ -1145,9 +1203,13 @@ def cmd_next(args):
         draft, impl = episode_files(out, n)
         if not os.path.exists(draft):
             tier, why = model_tier(n, load_sheet(ba), sheet_eps, last_ep)
-            return say("4 正文", f"生成第 {n} 集的任务单和骨架，这一轮只写这一集，写完跑 check。",
+            fresh = (f"第 {n} 集开新一卷。当前会话已经写过上一卷的话，先开新会话，只带一句：用 drama-clone 技能继续项目 {P}，先跑 next"
+                     f"{f' --min-total {args.min_total}' if args.min_total else ''}。进度都在磁盘上，不用带别的。"
+                     if i > 1 and (n - window[0]) % VOLUME == 0 else None)
+            return say("4 正文", f"生成第 {n} 集的任务包，读一次 out/brief-{n:03d}.md 就开写，这一轮只写这一集，写完跑包里的 check 命令。",
                        f"python3 {me} brief {n} --extract {ex} --sheet {ba} --out {out}"
-                       + (f" --sec {args.sec}" if args.sec else ""), model=tier, why=why)
+                       + (f" --min-total {args.min_total}" if args.min_total else "")
+                       + (f" --sec {args.sec}" if args.sec else ""), model=tier, why=why, session=fresh)
         code, res = _run(cmd_check, draft=draft, extract=ex, sheet=ba, impl=impl, min_total=args.min_total, sec=args.sec)
         if code:
             # 每个写过台词、没过的版本记一次（空骨架不算）；同一集改了两版还没过，升主力模型
@@ -1165,6 +1227,40 @@ def cmd_next(args):
                        {"draft": draft, "fix": res.get("fix")}, model=tier, why=why)
     return say("5 交付", "全部集检查通过。合并成一份全季稿，出对照表给用户审，再出 Word。",
                f"python3 {me} gate <合并稿> --extract {ex} --sheet {ba} --pair-out 对照.md")
+
+
+VOLUME = 10  # 正文每 10 集一卷，卷首提示开新会话：上下文越攒越长，每一轮都要重读，越写越贵越慢
+
+
+def cmd_progress(args):
+    """给主线程看的一页进度：每集一行，写没写、过没过、字数多少、该用哪档模型。主线程汇报只用它，不读正文和长 JSON。"""
+    P = args.project
+    ex, out, ba = os.path.join(P, "extract"), os.path.join(P, "out"), os.path.join(P, "beats-all.json")
+    m = load_sheet(os.path.join(ex, "manifest.json"))
+    sheet = load_sheet(ba)
+    sheet_eps = {e["ep"]: e for e in sheet.get("episodes", [])}
+    last_ep = max(int(k) for k in m["episodes"])
+    apath = os.path.join(out, "attempts.json")
+    attempts = load_sheet(apath) if os.path.exists(apath) else {}
+    window = [n for n in parse_range(args.range) if n in m["present"]] if args.range else m["present"]
+    rows, todo = [], []
+    for n in window:
+        draft, impl = episode_files(out, n)
+        tier, _ = model_tier(n, sheet, sheet_eps, last_ep, len(attempts.get(str(n), [])))
+        if not os.path.exists(draft):
+            todo.append(n)
+            continue
+        code, res = _run(cmd_check, draft=draft, extract=ex, sheet=ba, impl=impl, min_total=args.min_total, sec=args.sec)
+        with open(draft, encoding="utf-8") as f:
+            st = episode_stats(n, split_episodes(f.read()).get(n, ""))
+        verdict = "过" if not code else f"没过 {res.get('count', 0)} 条"
+        rows.append(f"| {n} | {verdict} | {st['totalHan']} | {st['speechHan']} | "
+                    f"{'主力' if tier == 'main' else '轻量'} |")
+    done = [r for r in rows if "| 过 |" in r]
+    print("\n".join([f"已过 {len(done)} 集，没过 {len(rows) - len(done)} 集，没写 {len(todo)} 集"
+                     + (f"（{todo[0]}-{todo[-1]}）" if todo else ""), "",
+                     "| 集 | check | 全文字数 | 口播字数 | 模型 |", "|---|---|---|---|---|", *rows]))
+    return 0 if len(done) == len(window) else 2
 
 
 def episode_files(out, n):
@@ -1187,6 +1283,11 @@ def main():
     p.add_argument("--batch", type=int, help="已停用：正文一次只发一集。留着只为旧命令不报错")
     p.add_argument("--min-total", type=int, help="每集全文字数下限（和用户定的）")
     p.add_argument("--sec", type=int, help="单集时长上限（秒），用户明确要求压缩时才给")
+    p = sub.add_parser("progress", help="一页进度表：每集过没过、全文/口播字数、模型档，主线程汇报用")
+    p.add_argument("--project", default=".")
+    p.add_argument("--range")
+    p.add_argument("--min-total", type=int)
+    p.add_argument("--sec", type=int)
     p = sub.add_parser("scaffold", help="生成预填的节拍骨架（原剧钩子、轮次切片已填好）")
     p.add_argument("range")
     p.add_argument("--extract", required=True)
@@ -1200,6 +1301,7 @@ def main():
     p.add_argument("--sheet", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--force", action="store_true", help="覆盖已有的正文/实现表骨架（任务单总是重写）")
+    p.add_argument("--min-total", type=int, help="每集全文字数下限，写进任务包里的 check 命令")
     p.add_argument("--sec", type=int, help="单集时长上限（秒）。不给就照原剧每集时长；用户或制作方明确要压时才给")
     p = sub.add_parser("check", help="写完一集马上跑：五项检查合一，只列要改的地方")
     p.add_argument("draft")
@@ -1265,7 +1367,8 @@ def main():
         return {"sheet": cmd_sheet, "align": cmd_align, "fingerprint": cmd_fingerprint, "voice": cmd_voice,
                 "rules": cmd_rules, "dup": cmd_dup, "build": cmd_build,
                 "source": cmd_source, "gate": cmd_gate, "next": cmd_next, "scaffold": cmd_scaffold,
-                "cast": cmd_cast, "brief": cmd_brief, "check": cmd_check, "presence": cmd_presence}[args.cmd](args)
+                "cast": cmd_cast, "brief": cmd_brief, "check": cmd_check, "presence": cmd_presence,
+                "progress": cmd_progress}[args.cmd](args)
     except (OSError, ValueError, KeyError) as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
         return 1
