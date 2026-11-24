@@ -1215,7 +1215,9 @@ def cmd_next(args):
     me = os.path.abspath(__file__)
 
     def say(step, todo, cmd=None, model=None, why=None, session=None):
-        r = {"step": step, "todo": todo, "cmd": cmd}
+        # 写明谁来做：轻模型见到不带主语的「填空」「生成骨架」，会当成用户的活交回去
+        ask = step.startswith(("2 外壳", "4 样集", "5 交付"))
+        r = {"step": step, "who": WHO_USER if ask else WHO_AGENT, "todo": todo, "cmd": cmd}
         if model:
             r["model"] = TIER_TEXT[model] + (f"（{'、'.join(why)}）" if why else "")
         if session:
@@ -1231,7 +1233,7 @@ def cmd_next(args):
     nobeat = [n for n in window if not os.path.exists(os.path.join(ex, "beats", f"ep-{n:03d}.json"))]
     if nobeat:
         r = f"{nobeat[0]}-{nobeat[min(len(nobeat), 10) - 1]}"
-        return say("1 提取", f"第 {r} 集还没有节拍骨架。生成骨架，再逐集读 source/ep-NNN.txt 填空。",
+        return say("1 提取", f"第 {r} 集还没有节拍骨架。你跑下面的命令生成骨架，然后你自己逐集读 source/ep-NNN.txt，把 beats/ep-NNN.json 填完。",
                    f"python3 {me} scaffold {r} --extract {ex}")
     unfilled = []
     for n in window:
@@ -1239,7 +1241,9 @@ def cmd_next(args):
         if not j.get("hook") or any(not b.get("function") for b in j["beats"]):
             unfilled.append(n)
     if unfilled:
-        return say("1 提取", f"这些集的节拍骨架还没填完：{unfilled}。填 function、craft、hook，按剧情调整 turns。")
+        return say("1 提取", f"这些集的节拍骨架还没填完：{unfilled}。你自己一集一集来：读 extract/source/ep-NNN.txt，"
+                   "在 extract/beats/ep-NNN.json 里填 function、craft、hook，按剧情调整 turns。填完一集接着填下一集，全部填完再跑 next。"
+                   "这是你的活，不要让用户填。")
     ba = os.path.join(P, "beats-all.json")
     stale = not os.path.exists(ba) or any(
         os.path.getmtime(os.path.join(ex, "beats", f"ep-{n:03d}.json")) > os.path.getmtime(ba) for n in window)
@@ -1253,7 +1257,7 @@ def cmd_next(args):
     if not sh.get("passed"):
         return say("1 提取", "节拍表没过，按下面逐条改 beats/ep-NNN.json，改完重新 build。不许改 gaps 凑通过。",
                    {"problems": sh.get("problems")})
-    for f, step, todo in (("bible.md", "2 外壳", "出 3 个外壳候选给用户选（只写概念，做金手指能力对位）。用户选定后写 bible.md。"),
+    for f, step, todo in (("bible.md", "2 外壳", "你先自己出 3 个外壳候选（只写概念，做金手指能力对位），然后停下来给用户选。用户选定后你写 bible.md。"),
                           ("season-map.md", "3 地图", "写全季实现地图 season-map.md。")):
         if not os.path.exists(os.path.join(P, f)):
             return say(step, todo)
@@ -1305,6 +1309,8 @@ def cmd_next(args):
                f"python3 {me} gate <合并稿> --extract {ex} --sheet {ba} --pair-out 对照.md")
 
 
+WHO_AGENT = "你（AI）自己做，不要交给用户：照 todo 做完，马上再跑 next，一直做到下一个需要用户拍板的步骤"
+WHO_USER = "停下来找用户：把结果给用户看，等用户拍板再继续"
 VOLUME = 10  # 正文每 10 集一卷，卷首提示开新会话：上下文越攒越长，每一轮都要重读，越写越贵越慢
 
 
