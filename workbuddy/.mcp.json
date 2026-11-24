@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "mali-story": {
+      "type": "http",
+      "url": "https://story-api.maliai.art/mcp",
+      "x-workbuddy": {
+        "displayName": {
+          "zh": "Mali 拉片库",
+          "en": "Mali Story"
+        },
+        "description": {
+          "zh": "连接后可搜索和读取爆款短剧的逐集拉片模板。",
+          "en": "Search and read episode-by-episode breakdowns of hit short dramas."
+        },
+        "auth": {
+          "type": "oauth"
+        }
+      }
+    }
+  }
+}

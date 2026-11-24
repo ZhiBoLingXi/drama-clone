@@ -66,6 +66,8 @@ python3 -m venv .venv
 - `SKILL.md`：技能入口与工作流。
 - `references/`：节拍、台词结构、裂变、制作、编排和格式规则。
 - `templates/`：提取、写作、修订任务书。
+- `workbuddy/`：WorkBuddy 专家包的源文件（专家 manifest、系统提示词、mali-story 连接器声明）。
+- `pack.sh`：打包。产出 `dist/drama-clone-v<版本>.zip`（纯技能）和 `dist/drama-clone-expert-v<版本>.zip`（专家包，技能从本仓库现拷）；`dist/` 和 `workbuddy/skills/` 不入库。
 - `scripts/clone_check.py`：流程导航（`next`）、骨架生成（`source`/`scaffold`/`cast`/`brief`）、逐集快检（`check`）和各项单独检查。
 - `scripts/to_docx.py`：Word 导出。
 - `INSTALL.md`：面向安装 Agent 的操作说明。

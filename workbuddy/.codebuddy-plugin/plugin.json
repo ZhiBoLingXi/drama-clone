@@ -1,0 +1,67 @@
+{
+  "name": "drama-clone-expert",
+  "version": "1.1.0",
+  "description": "Clones a hit vertical short drama episode by episode: same beats, hooks and dialogue structure, all-new characters and lines, with plagiarism and production checks",
+  "author": {
+    "name": "MaLiAI",
+    "email": "jingles@meshjs.dev"
+  },
+  "agents": [
+    "./agents/drama-clone-director.md"
+  ],
+  "expertType": "agent",
+  "agentName": "drama-clone-director",
+  "skills": [
+    "./skills/drama-clone"
+  ],
+  "displayName": {
+    "en": "Clone Director",
+    "zh": "高仿编剧"
+  },
+  "profession": {
+    "en": "Short Drama Clone Screenwriter",
+    "zh": "短剧高仿裂变编剧"
+  },
+  "displayDescription": {
+    "en": "Breaks down a hit short drama and rewrites it episode by episode with the same beats, hooks and dialogue structure but all-new characters and lines, with built-in plagiarism and production checks",
+    "zh": "拆解一部短剧爆款，逐集对齐它的节拍、钩子和台词结构，写出人物桥段台词全新的剧本，自带查重与制作检查"
+  },
+  "avatar": "avatars/expert.png",
+  "categoryId": "06-ContentCreative",
+  "defaultInitPrompt": {
+    "zh": "把《剧名》高仿裂变成一部新剧",
+    "en": "Clone the hit drama <title> into a new script"
+  },
+  "plugin": "drama-clone-expert",
+  "tags": [
+    {
+      "en": "Short Drama",
+      "zh": "短剧剧本"
+    },
+    {
+      "en": "Hit Cloning",
+      "zh": "爆款裂变"
+    },
+    {
+      "en": "Plagiarism Check",
+      "zh": "查重"
+    }
+  ],
+  "quickPrompts": [
+    {
+      "zh": "把《剧名》高仿裂变成一部新剧",
+      "en": "Clone the hit drama <title> into a new script"
+    },
+    {
+      "zh": "给《剧名》出 3 个裂变外壳让我选",
+      "en": "Give me three new settings for <title>"
+    },
+    {
+      "zh": "接着写下一集剧本正文",
+      "en": "Continue with the next episode"
+    }
+  ],
+  "dependencies": {
+    "mcpServers": "./.mcp.json"
+  }
+}

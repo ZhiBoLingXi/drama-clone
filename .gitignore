@@ -6,3 +6,6 @@ __pycache__/
 .env.*
 !.env.example
 _skillhub_meta.json
+# 打包产物：pack.sh 生成
+dist/
+workbuddy/skills/
