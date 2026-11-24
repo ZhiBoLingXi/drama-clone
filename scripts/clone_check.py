@@ -264,6 +264,48 @@ PLACEHOLDER = re.compile(
     r"|^\s*(?:…+|\.{3,}|。{3,}|\[\.\.\.\])\s*$", re.M)
 
 
+# 套路反应：同一种反应全季反复用，是 AI 稿最显眼的味道。实测一部 AI 写的 94 集，「攥着/攥紧」出现在 60 集，「冷笑」25 集。
+# 规则：同一组 10 集内只用一次，同一集里只用一次。
+STOCK_REACTIONS = {
+    "攥紧": "攥紧|攥着|攥住|握紧拳|捏紧", "冷笑": "冷笑|嗤笑|冷哼", "愣住": "愣住|一愣|愣在|怔住|怔了",
+    "叹气": "叹了口气|叹口气|长叹", "脸一沉": "脸一沉|脸色一沉|沉下脸", "脸白": "脸色一白|脸色煞白|脸色发白|脸白了",
+    "喉结": "喉结", "咬牙": "咬牙|咬紧牙", "手抖": "手一抖|手抖", "倒吸凉气": "倒吸一口|倒吸了口|凉气",
+    "后退": "后退一步|连连后退|退了一步|往后退", "苦笑": "苦笑", "瞪眼": "瞪大|瞪圆", "瘫坐": "瘫坐|瘫软|瘫在",
+    "红眼眶": "眼眶一红|眼眶泛红|红了眼眶|眼圈一红", "深吸气": "深吸一口气|深吸了口气", "沉默": "沉默片刻|沉默了几秒|沉默半晌",
+    "身子一僵": "身子一僵|浑身一僵|僵在原地|浑身一震", "顿了顿": "顿了顿",
+}
+STOCK_RE = {k: re.compile(v) for k, v in STOCK_REACTIONS.items()}
+STOCK_GAP = 10
+
+
+def stock_uses(text):
+    """{组名: 命中次数}，只看 △ 行和括注：动作和神态才是套路反应出没的地方。"""
+    out = {}
+    for l in text.splitlines():
+        s = l.strip()
+        spots = [s] if s.startswith("△") else re.findall(r"（[^）]*）", s)
+        for spot in spots:
+            for k, rx in STOCK_RE.items():
+                n = len(rx.findall(spot))
+                if n:
+                    out[k] = out.get(k, 0) + n
+    return out
+
+
+def season_stock(out_dir, skip=()):
+    """同目录所有正文里每组套路反应用在哪几集：{组名: [集号…]}。"""
+    import glob
+    used = {}
+    for p in sorted(glob.glob(os.path.join(out_dir, "draft-*.md"))):
+        if os.path.abspath(p) in skip:
+            continue
+        with open(p, encoding="utf-8") as f:
+            for n, body in split_episodes(f.read()).items():
+                for k in stock_uses(body):
+                    used.setdefault(k, set()).add(n)
+    return {k: sorted(v) for k, v in used.items()}
+
+
 def placeholders(lines):
     return [(m.group(0).strip() or "……", l.strip()[:30]) for l in lines for m in [PLACEHOLDER.search(l)] if m]
 
@@ -1018,6 +1060,24 @@ def _blocks(text):
     return [b for b in re.split(r"\n\s*\n", text) if b.strip()]
 
 
+def _sections(text):
+    """按 ##/###/#### 标题切小节；没有小节标题就按空行切段。"""
+    secs = [s for s in re.split(r"(?m)^(?=#{2,4} )", text) if s.strip()]
+    return secs if len(secs) > 1 else _blocks(text)
+
+
+VOICE_SAMPLE = re.compile(r"示例台词|台词示例|口头禅")
+
+
+def voiceless_leads(P, m, window, cast):
+    """主要人物（在这一段一半以上的集里开口的）圣经里有没有写示例台词。没有示例，轻模型写出来人人一个腔。"""
+    from collections import Counter
+    c = Counter(cast.get(sp) for n in window for sp in m["episodes"][str(n)]["speakers"] if cast.get(sp))
+    leads = [x for x, k in c.items() if k >= max(2, len(window) / 2)]
+    secs = _sections(_read(os.path.join(P, "bible.md")))
+    return [x for x in leads if not any(x in s and VOICE_SAMPLE.search(s) for s in secs)]
+
+
 def _read(path):
     if not os.path.exists(path):
         return ""
@@ -1031,8 +1091,11 @@ def packet_extras(out, n, names, cap=4000):
     parts = ["", "---", "", "# 附录（写这一集要用的全在这里）", ""]
     bible = _read(os.path.join(P, "bible.md"))
     if bible:
-        keep = bible if len(bible) <= cap else "\n\n".join(b for b in _blocks(bible) if any(x in b for x in names))[:cap]
-        parts += ["## 圣经：本集出场的人" + ("" if len(bible) <= cap else "（只摘了本集出场的人，别的要用再读 bible.md）"), "", keep or bible[:cap], ""]
+        # 按小节摘：一个人的说话特点和示例台词常常不和名字在同一段，按空行切会把示例台词切丢
+        secs = _sections(bible)
+        keep = bible if len(bible) <= cap else "\n\n".join(s for s in secs if any(x in s for x in names))[:cap]
+        parts += ["## 圣经：本集出场的人" + ("" if len(bible) <= cap else "（只摘了本集出场的人，别的要用再读 bible.md）"),
+                  "", "每个人照自己的「说话」和「示例台词」写，盖住名字也要听得出是谁在说。", "", keep or bible[:cap], ""]
     smap = _read(os.path.join(P, "season-map.md"))
     if smap:
         if len(smap) <= cap:
@@ -1128,6 +1191,15 @@ def cmd_check(args):
         text = f.read()
     empty = re.findall(r"<!-- (E\d+-B\d+)[^\n]*-->\s*\n\s*(?=<!--)", text)
     out += [f"{b} 还没写" for b in empty]
+    # 套路反应：本集用了两次以上，或者前 10 集里已经用过（看同目录的其他集）
+    others = season_stock(os.path.dirname(os.path.abspath(args.draft)), skip={os.path.abspath(args.draft)})
+    for n, body in split_episodes(text).items():
+        for k, c in stock_uses(body).items():
+            near = [m for m in others.get(k, []) if 0 < n - m < STOCK_GAP]
+            if c > 1:
+                out.append(f"第{n}集「{k}」这类反应用了 {c} 次，一集只留一次，其余换成这个人自己的动作或一句话")
+            elif near:
+                out.append(f"第{n}集又用了「{k}」这类反应，第{near[-1]}集刚用过（{STOCK_GAP} 集内不重复），换成这个人自己的反应")
     # 只给前 20 条：改完再跑一次就会报剩下的，一次贴几十条只是让每一轮的上下文更长
     rep = {"passed": not out, "count": len(out), "fix": out[:20]}
     if len(out) > 20:
@@ -1190,6 +1262,10 @@ def cmd_next(args):
     need = {sp for n in window for sp in m["episodes"][str(n)]["speakers"]}
     if not cast or any(not cast.get(sp) for sp in need):
         return say("3 地图", "填选角表：原剧每个说话人对应新剧谁。", f"python3 {me} cast {window[0]}-{window[-1]} --extract {ex}")
+    mute = voiceless_leads(P, m, window, cast)
+    if mute:
+        return say("3 地图", f"bible.md 里这些主要人物还没有示例台词：{'、'.join(mute)}。在每人的小节里补「说话：」一行"
+                   "（句子长短、口头禅、方言词、怎么骂人怎么服软）和「示例台词：」2-3 句，各人之间要听得出差别。任务包会按本集出场的人带上。")
     approved = os.path.join(P, "approved-sample.txt")
     out = os.path.join(P, "out")
     sheet_eps = {e["ep"]: e for e in load_sheet(ba).get("episodes", [])}
@@ -1257,8 +1333,11 @@ def cmd_progress(args):
         rows.append(f"| {n} | {verdict} | {st['totalHan']} | {st['speechHan']} | "
                     f"{'主力' if tier == 'main' else '轻量'} |")
     done = [r for r in rows if "| 过 |" in r]
+    stock = season_stock(out)
+    heavy = sorted(((k, v) for k, v in stock.items() if len(v) > max(1, len(window) // STOCK_GAP)), key=lambda x: -len(x[1]))
     print("\n".join([f"已过 {len(done)} 集，没过 {len(rows) - len(done)} 集，没写 {len(todo)} 集"
-                     + (f"（{todo[0]}-{todo[-1]}）" if todo else ""), "",
+                     + (f"（{todo[0]}-{todo[-1]}）" if todo else ""),
+                     "套路反应超量（每 10 集最多一次）：" + ("；".join(f"「{k}」{len(v)} 集" for k, v in heavy) if heavy else "无"), "",
                      "| 集 | check | 全文字数 | 口播字数 | 模型 |", "|---|---|---|---|---|", *rows]))
     return 0 if len(done) == len(window) else 2
 
