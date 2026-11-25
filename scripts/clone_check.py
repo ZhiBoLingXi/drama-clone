@@ -978,7 +978,9 @@ def cmd_brief(args):
     eps = {e["ep"]: e for e in sheet.get("episodes", [])}
     rng = parse_range(args.range)
     fp = sorted(fingerprint_terms(sheet, manifest))
-    head = ["每一拍都按下表写：轮次数和说话顺序对上，每句话自己写，不翻译原句。写完立刻跑 `check`，过了再要下一集。", "",
+    head = ["每一拍都按下表写：轮次数和说话顺序对上，每句话自己写，不翻译原句。写完立刻跑 `check`，过了再要下一集。"
+            "没过就按 `fix` 里的行号用编辑工具只改那几行，不整集重写。"
+            "实现表里已经写好「出口状态」的（几集同时写时主线程先定的），结尾照它收，别改：下一集正照它开头。", "",
             "**一次只写这一集，只读这一份任务包。** 圣经里本集要用的人物、地图里本集的分段、样集、写作规则都附在后面，"
             "不用再去读 bible.md、season-map.md、references/，也不回头读前面几集的正文，上一集的结尾状态已经写在本单里。"
             "整集写完，不许用「略」「同上」「此处省略」「以此类推」代替任何一段戏，`check` 会拦。", "",
@@ -1129,7 +1131,59 @@ def packet_extras(out, n, names, cap=4000):
     return parts
 
 
-EXIT_STATE = re.compile(r"出口状态\s*[:：]\s*(\S.*)")
+EXIT_STATE = re.compile(r"出口状态[ \t]*[:：][ \t]*(\S.*)")  # 不跨行：空着的「出口状态：」不能吃到下一行的「加人：」
+FIX_HOW = ("照 fix 逐条用编辑工具只改报出的那几行（「第 N 行」是 draft 文件里的行号），不要整集重写：整集重写又要从头生成一遍，"
+           "改一处只要几秒。只有「还没写」的拍才整段补。")
+
+
+def has_speech(path):
+    """写过台词没有：brief 先建好的空骨架只有注释槽，不算写过（注释槽里的「轮：苏和…」也长得像台词，先去掉）。"""
+    return any(SPEECH.match(l) for l in COMMENT.sub("", _read(path)).splitlines())
+
+
+def open_seams(out, passed):
+    """同时写的批次里，相邻两集都过了 check、还没看过接缝的：[(上一集, 下一集)]。"""
+    bpath, spath = os.path.join(out, "batches.json"), os.path.join(out, "seams.json")
+    if not os.path.exists(bpath):
+        return []
+    done = set(load_sheet(spath)) if os.path.exists(spath) else set()
+    pairs = []
+    for b in load_sheet(bpath):
+        pairs += [(a, z) for a, z in zip(b, b[1:]) if a in passed and z in passed and f"{a}|{z}" not in done]
+    return sorted(set(pairs))
+
+
+def _content_lines(path, n):
+    body = split_episodes(COMMENT.sub("", _read(path))).get(n, "")
+    return [l.strip() for l in body.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+
+
+def seam_digest(out, pairs, k=6):
+    """每对接缝只给计划的出口状态、上一集最后几行、下一集开头几行：看接缝不用读整集。"""
+    rows = []
+    for a, z in pairs:
+        ex = EXIT_STATE.search(_read(episode_files(out, a)[1]))
+        rows.append({"pair": f"{a}|{z}", "plannedExit": ex.group(1).strip() if ex else None,
+                     "prevEnd": _content_lines(episode_files(out, a)[0], a)[-k:],
+                     "nextStart": _content_lines(episode_files(out, z)[0], z)[:k]})
+    return rows
+
+
+def cmd_seam(args):
+    """并行写完的相邻两集看接缝；--mark 记下已经看过、改好了。"""
+    out = layout(args.project)["out"]
+    want = set(parse_range(args.range))
+    pairs = [(a, z) for a, z in open_seams(out, want | {n - 1 for n in want}) if z in want]
+    if args.mark:
+        spath = os.path.join(out, "seams.json")
+        done = load_sheet(spath) if os.path.exists(spath) else []
+        done = sorted(set(done) | {f"{a}|{z}" for a, z in pairs})
+        with open(spath, "w", encoding="utf-8") as f:
+            json.dump(done, f)
+        print(json.dumps({"marked": [f"{a}|{z}" for a, z in pairs]}, ensure_ascii=False))
+        return 0
+    print(json.dumps({"seams": seam_digest(out, pairs)}, ensure_ascii=False, indent=1))
+    return 0
 TIER_TEXT = {"main": "主力模型（会话顶档）", "light": "轻量模型即可（照骨架填空）"}
 
 
@@ -1176,13 +1230,22 @@ def cmd_check(args):
     """写完一集马上跑的快检：一次跑完 gate/voice/rules/fingerprint/dup，只打印要改的地方，省读输出的 token。"""
     ex, sh = args.extract, args.sheet
     out = []
+    with open(args.draft, encoding="utf-8") as f:
+        text = f.read()
+    lines = text.splitlines()
+
+    def at(pred):
+        # 报行号，写手就能用编辑工具只改那一行，不用整集重写
+        hit = [str(i) for i, l in enumerate(lines, 1) if pred(l)]
+        return f"第 {'、'.join(hit[:5])} 行" if hit else "行号没找到"
     _, g = _run(cmd_gate, draft=args.draft, extract=ex, sheet=sh, impl=args.impl, pair_out=None,
                 min_line_ratio=0.7, min_speech_ratio=0.6, max_speech_ratio=1.3)
     out += g.get("problems", [])
     _, v = _run(cmd_voice, draft=args.draft, min_total=args.min_total, min_speech=None,
                 max_speech=round(args.sec * CHARS_PER_SEC * 1.1) if args.sec else None, max_tics=0, max_run=3)
     out += [f"第{x['ep']}集：{'；'.join(x['why'])}" for x in v.get("failed", [])]
-    out += [f"AI 腔「{t}」：{l}" for r in v.get("episodes", []) for t, l in r.get("aiTics", [])]
+    out += [f"{at(lambda x, l=l: l.strip() and l.strip() in x)} AI 腔「{t}」：{l}"
+            for r in v.get("episodes", []) for t, l in r.get("aiTics", [])]
     _, r = _run(cmd_rules, draft=args.draft, max_speakers=4, max_han=20, require_annotation=False)
     out += [f"{x['scene']} 说话人 {len(x['speakers'])} 个：{'、'.join(x['speakers'])}" for x in r.get("tooManySpeakers", [])]
     out += [f"第 {x['line']} 行 {x['speaker']} 台词 {x['han']} 字，拆成两行或删短" for x in r.get("tooLong", [])]
@@ -1194,11 +1257,9 @@ def cmd_check(args):
     out += pr.get("problems", [])
     _, fpr = _run(cmd_fingerprint, sheet=sh, draft=args.draft, ignore=None,
                   manifest=os.path.join(ex, "manifest.json"))
-    out += [f"指纹「{h['term']}」第{h['ep']}集：{h['context']}" for h in fpr.get("hits", [])]
+    out += [f"{at(lambda l, t=h['term']: t in l)} 指纹「{h['term']}」：{h['context']}" for h in fpr.get("hits", [])]
     _, d = _run(cmd_dup, draft=args.draft, source=os.path.join(ex, "corpus.txt"), k=8)
     out += [f"和原剧连续 8 字相同（第 {h['line']} 行）：{h['ngram']}" for h in d.get("hits", [])]
-    with open(args.draft, encoding="utf-8") as f:
-        text = f.read()
     empty = re.findall(r"<!-- (E\d+-B\d+)[^\n]*-->\s*\n\s*(?=<!--)", text)
     out += [f"{b} 还没写" for b in empty]
     # 套路反应：本集用了两次以上，或者前 10 集里已经用过（看同目录的其他集）
@@ -1206,10 +1267,11 @@ def cmd_check(args):
     for n, body in split_episodes(text).items():
         for k, c in stock_uses(body).items():
             near = [m for m in others.get(k, []) if 0 < n - m < STOCK_GAP]
+            where = at(lambda l, rx=STOCK_RE[k]: bool(rx.search(l)) and (l.strip().startswith("△") or "（" in l))
             if c > 1:
-                out.append(f"第{n}集「{k}」这类反应用了 {c} 次，一集只留一次，其余换成这个人自己的动作或一句话")
+                out.append(f"{where} 第{n}集「{k}」这类反应用了 {c} 次，一集只留一次，其余换成这个人自己的动作或一句话")
             elif near:
-                out.append(f"第{n}集又用了「{k}」这类反应，第{near[-1]}集刚用过（{STOCK_GAP} 集内不重复），换成这个人自己的反应")
+                out.append(f"{where} 第{n}集又用了「{k}」这类反应，第{near[-1]}集刚用过（{STOCK_GAP} 集内不重复），换成这个人自己的反应")
     # 只给前 20 条：改完再跑一次就会报剩下的，一次贴几十条只是让每一轮的上下文更长
     rep = {"passed": not out, "count": len(out), "fix": out[:20]}
     if len(out) > 20:
@@ -1225,7 +1287,7 @@ def cmd_next(args):
     P, ex = L["P"], L["ex"]
     me = os.path.abspath(__file__)
 
-    def say(step, todo, cmd=None, model=None, why=None, session=None):
+    def say(step, todo, cmd=None, model=None, why=None, session=None, parallel=None):
         # 写明谁来做：轻模型见到不带主语的「填空」「生成骨架」，会当成用户的活交回去
         ask = step.startswith(("2 外壳", "2 剧名", "4 样集", "5 交付"))
         r = {"step": step, "who": WHO_USER if ask else WHO_AGENT, "todo": todo, "cmd": cmd}
@@ -1233,6 +1295,8 @@ def cmd_next(args):
             r["model"] = TIER_TEXT[model] + (f"（{'、'.join(why)}）" if why else "")
         if session:
             r["session"] = session
+        if parallel:
+            r["parallel"] = parallel
         print(json.dumps(r, ensure_ascii=False, indent=1))
         return 0
     mpath = os.path.join(ex, "manifest.json")
@@ -1256,6 +1320,14 @@ def cmd_next(args):
         j = load_sheet(os.path.join(ex, "beats", f"ep-{n:03d}.json"))
         if not j.get("hook") or any(not b.get("function") for b in j["beats"]):
             unfilled.append(n)
+    if unfilled and args.parallel > 1:
+        # 每集的提取互不依赖：一集一个子代理，同时读、同时填
+        tasks = [{"ep": n, "read": os.path.join(ex, "source", f"ep-{n:03d}.txt"),
+                  "write": os.path.join(ex, "beats", f"ep-{n:03d}.json")} for n in unfilled[:args.parallel]]
+        return say("1 提取", f"这些集的节拍骨架还没填完：{unfilled}。这一轮并行填 parallel 里的 {len(tasks)} 集：每集派一个子代理，"
+                   f"任务书照 {os.path.join(SKILL_DIR, 'templates', 'EXTRACT.md')} 改，只给它这一集的 read 和 write 两个路径，"
+                   "它只读这一集原文、只写这一个 json，填 function、craft、hook，按剧情调整 turns，返回不超过 3 行。"
+                   "全部返回后你再跑 next。这是你和子代理的活，不要让用户填。", parallel=tasks)
     if unfilled:
         return say("1 提取", f"这些集的节拍骨架还没填完：{unfilled}。你自己一集一集来：读 extract/source/ep-NNN.txt，"
                    "在 extract/beats/ep-NNN.json 里填 function、craft、hook，按剧情调整 turns。填完一集接着填下一集，全部填完再跑 next。"
@@ -1304,21 +1376,79 @@ def cmd_next(args):
     last_ep = max(int(k) for k in m["episodes"])
     apath = os.path.join(out, "attempts.json")
     attempts = load_sheet(apath) if os.path.exists(apath) else {}
-    # 一次只发一集：上一集 check 没过，不给下一集
+    sheet_all = load_sheet(ba)
+
+    def brief_cmd(r):
+        return (f"python3 {me} brief {r} --extract {ex} --sheet {ba} --out {out}"
+                + (f" --cast {cpath}" if L["mode"] == "variant" else "")
+                + (f" --min-total {args.min_total}" if args.min_total else "")
+                + (f" --sec {args.sec}" if args.sec else ""))
+
+    def fresh_for(i, n):
+        return (f"第 {n} 集开新一卷。当前会话已经写过上一卷的话，先开新会话，只带一句：用 drama-clone 技能继续项目 {P}，先跑 next"
+                f"{f' --min-total {args.min_total}' if args.min_total else ''}"
+                f"{f' --parallel {args.parallel}' if args.parallel > 1 else ''}。进度都在磁盘上，不用带别的。"
+                if i > 1 and (n - window[0]) % VOLUME == 0 else None)
+
+    def tier_text(n, tries=0):
+        tier, why = model_tier(n, sheet_all, sheet_eps, last_ep, tries)
+        return TIER_TEXT[tier] + (f"（{'、'.join(why)}）" if why else "")
+
+    # 样集认可以后才并行：样集是全季的口味基准，没定之前同时写几集只会一起返工
+    par = args.parallel if os.path.exists(approved) else 1
+    fixes, passed = [], set()
+
+    def seam_step():
+        todo = open_seams(out, passed)
+        if not todo:
+            return None
+        return say("4 衔接", "下面几对是同时写的相邻两集，下一集是照计划的出口状态开头的。逐对看上一集结尾和下一集开头接不接得上："
+                   "人在哪、谁知道了什么、钱和东西在谁手里、隔了多久。接不上的只改下一集开头几行（或上一集最后几行），"
+                   "改完跑那一集的 check；全部接上了跑 mark 记下来，再跑 next。",
+                   {"seams": seam_digest(out, todo),
+                    "mark": f"python3 {me} seam --project {P} --range {todo[0][1]}-{todo[-1][1]} --mark"})
+
+    # 不并行时一次只发一集：上一集 check 没过，不给下一集。并行时一次发一卷里连着的几集，各派一个子代理
     for i, n in enumerate(window):
         if i == 1 and not os.path.exists(approved):
             return say("4 样集", f"第 {window[0]} 集样集写完了，交给用户看。用户认可后，把用户的原话写进 {approved}，再继续。")
         draft, impl = episode_files(out, n)
+        if par > 1 and i >= 1 and not has_speech(draft):
+            if fixes:
+                break
+            s = seam_step()
+            if s is not None:
+                return s
+            batch = [n]
+            for k in window[i + 1:]:
+                if len(batch) >= par or (k - window[0]) % VOLUME == 0 or has_speech(episode_files(out, k)[0]):
+                    break
+                batch.append(k)
+            rng = f"{batch[0]}-{batch[-1]}"
+            # 同时写，下一集就拿不到上一集写出来的结尾：先把每集的出口状态定下来，任务包照计划交接
+            plan = [k for k in [window[i - 1]] + batch[:-1] if not EXIT_STATE.search(_read(episode_files(out, k)[1]))]
+            if plan:
+                return say("4 卷纲", f"第 {rng} 集要同时写，每集开头要接上一集的结尾，所以先定好每集怎么收。先跑 cmd 生成这几集的任务包和骨架，"
+                           f"再在实现表里写好「- 出口状态：」：{'、'.join(os.path.basename(episode_files(out, k)[1]) for k in plan)}。"
+                           "照全季地图和节拍表的 stateAfter，每集一两句：结束时人在哪、谁知道了什么、钱和东西在谁手里。"
+                           "计划要加人、有人离场的，同时写「加人：」「离场：」。写好再跑 next。",
+                           brief_cmd(rng), session=fresh_for(i, n))
+            bpath = os.path.join(out, "batches.json")
+            batches = load_sheet(bpath) if os.path.exists(bpath) else []
+            if batch not in batches:
+                batches.append(batch)
+                with open(bpath, "w", encoding="utf-8") as f:
+                    json.dump(batches, f)
+            tasks = [{"ep": k, "brief": os.path.join(out, f"brief-{k:03d}.md"), "draft": episode_files(out, k)[0],
+                      "impl": episode_files(out, k)[1], "model": tier_text(k)} for k in batch]
+            return say("4 正文", f"先跑 cmd 重新生成第 {rng} 集的任务包（带上刚定的出口状态），再同时写这 {len(batch)} 集：每集派一个子代理，"
+                       "按 parallel 里的 model 选模型。给每个子代理的任务书只写：读一次 brief，照它写 draft 和 impl，"
+                       "跑 brief 里的 check，按 fix 的行号改到 passed，只写自己这一集的文件，返回不超过 3 行。"
+                       "全部返回后你再跑 next。", brief_cmd(rng), parallel=tasks, session=fresh_for(i, n))
         if not os.path.exists(draft):
-            tier, why = model_tier(n, load_sheet(ba), sheet_eps, last_ep)
-            fresh = (f"第 {n} 集开新一卷。当前会话已经写过上一卷的话，先开新会话，只带一句：用 drama-clone 技能继续项目 {P}，先跑 next"
-                     f"{f' --min-total {args.min_total}' if args.min_total else ''}。进度都在磁盘上，不用带别的。"
-                     if i > 1 and (n - window[0]) % VOLUME == 0 else None)
+            tier, why = model_tier(n, sheet_all, sheet_eps, last_ep)
             return say("4 正文", f"生成第 {n} 集的任务包，读一次 out/brief-{n:03d}.md 就开写，这一轮只写这一集，写完跑包里的 check 命令。",
-                       f"python3 {me} brief {n} --extract {ex} --sheet {ba} --out {out}"
-                       + (f" --cast {cpath}" if L["mode"] == "variant" else "")
-                       + (f" --min-total {args.min_total}" if args.min_total else "")
-                       + (f" --sec {args.sec}" if args.sec else ""), model=tier, why=why, session=fresh)
+                       brief_cmd(n), model=tier, why=why, session=fresh_for(i, n))
         code, res = _run(cmd_check, draft=draft, extract=ex, sheet=ba, impl=impl, min_total=args.min_total, sec=args.sec, cast=cpath)
         if code:
             # 每个写过台词、没过的版本记一次（空骨架不算）；同一集改了两版还没过，升主力模型
@@ -1326,14 +1456,26 @@ def cmd_next(args):
                 raw = f.read()
             h = hashlib.sha1(raw).hexdigest()[:12]
             seen = attempts.setdefault(str(n), [])
-            if h not in seen and any(SPEECH.match(l) for l in raw.decode("utf-8").splitlines()):
+            if h not in seen and has_speech(draft):
                 seen.append(h)
                 os.makedirs(out, exist_ok=True)
                 with open(apath, "w", encoding="utf-8") as f:
                     json.dump(attempts, f, ensure_ascii=False, indent=1)
-            tier, why = model_tier(n, load_sheet(ba), sheet_eps, last_ep, len(seen))
-            return say("4 正文", f"第 {n} 集还有要改的地方（没写的拍、用「略」顶替的也在里面），改完再跑 next。",
-                       {"draft": draft, "fix": res.get("fix")}, model=tier, why=why)
+            tier, why = model_tier(n, sheet_all, sheet_eps, last_ep, len(seen))
+            if par <= 1 or i == 0:
+                return say("4 正文", f"第 {n} 集还有要改的地方（没写的拍、用「略」顶替的也在里面），改完再跑 next。{FIX_HOW}",
+                           {"draft": draft, "fix": res.get("fix")}, model=tier, why=why)
+            fixes.append({"ep": n, "draft": draft, "fix": res.get("fix"), "model": tier_text(n, len(seen))})
+            if len(fixes) >= par:
+                break
+            continue
+        passed.add(n)
+    if fixes:
+        return say("4 正文", f"这 {len(fixes)} 集还有要改的地方。每集派一个子代理同时改（按 model 选模型），任务书给它 draft 路径和 fix 原文。"
+                   f"{FIX_HOW}改完跑 brief 里的 check 到 passed，返回不超过 3 行；全部返回后你再跑 next。", parallel=fixes)
+    s = seam_step()
+    if s is not None:
+        return s
     if L["mode"] == "variant":
         return say("5 交付", "全部集检查通过。跑 deliver：合并全季稿、按规范命名、出原剧对照表和交付说明、和同一部原剧的其他变体查重，"
                    "版本号自动加一。然后把 delivery/ 里这一版的文件交给用户。",
@@ -1352,14 +1494,25 @@ def workspace_step(L, say, me):
     sh = L["shells"]
     if not os.path.exists(sh) or os.path.getmtime(sh) <= newest:
         return say("2 外壳", f"你先读 market/ 里最新的热播榜摘要，再自己出 3 个外壳候选，写进 {sh}"
-                   f"（追加一节「## 第{len(vs) + 1}轮」，格式见 references/fission.md，每个候选写「榜单依据」），然后停下来给用户选。"
+                   f"（追加一节「## 第{len(vs) + 1}轮」，格式见 references/fission.md，每个候选写「榜单依据」和一行「剧名候选：」3 个剧名）。"
+                   f"9 个剧名先一起跑 `python3 {me} title-check --workspace {W} <剧名…>`，没过的换掉再跑，全过了再停下来给用户选："
+                   "用户一次选定外壳和剧名，少等一轮。"
                    + (f"这部原剧已经裂变过：{prior}。新候选和每一个已有变体之间，外壳四轴至少三轴不同。" if vs else ""))
     text = open(sh, encoding="utf-8").read()
     head = f"## 第{len(vs) + 1}轮"
     if head not in text:
         return say("2 外壳", f"{sh} 里没有「{head}」这一节。这一轮的 3 个候选写在这个标题下面（前面几轮的别动），再停下来给用户选。")
+    picked = re.search(r"^选定[:：]\s*(候选\s*\S+?)\s*[《「](.+?)[》」]", text.split(head)[-1], re.M)
+    if picked:
+        # 外壳和剧名一起选定：直接立项，不再单独问剧名
+        shell, title = picked.group(1).replace(" ", ""), picked.group(2).strip()
+        return say("2 立项", f"用户选定了{shell}《{title}》。跑 cmd 立项（--axes 照这个候选的四轴写一句），"
+                   "之后所有命令都用 --project 指向新建的变体目录，在那里跑 next。",
+                   f"python3 {me} variant --workspace {W} --title {title} --shell {shell} "
+                   "--axes '<地域行业·主角身份·底牌形式·关系载体>'")
     if not re.search(r"^选定[:：]", text.split(head)[-1], re.M):
-        return say("2 外壳", f"候选已经写在 {sh}，等用户选。用户选定后，在这一轮末尾写一行「选定：候选X」，再跑 next。")
+        return say("2 外壳", f"候选和剧名已经写在 {sh}，等用户选。用户选定后，在这一轮末尾写一行「选定：候选X《剧名》」，再跑 next。"
+                   "用户只选了外壳、没选剧名，就写「选定：候选X」。")
     return say("2 剧名", "外壳选定了。给这个外壳起 5 个剧名（规范见 references/naming.md：4-16 个汉字、卖点或反差放前面、"
                "不和原剧、热播榜、已有变体撞名，不带原剧专名），先跑下面的 title-check，过了的拿给用户选。"
                "用户选定后跑 variant 立项，之后所有命令都用 --project 指向新建的变体目录。",
@@ -1571,6 +1724,12 @@ def main():
     p.add_argument("--batch", type=int, help="已停用：正文一次只发一集。留着只为旧命令不报错")
     p.add_argument("--min-total", type=int, help="每集全文字数下限（和用户定的）")
     p.add_argument("--sec", type=int, help="单集时长上限（秒），用户明确要求压缩时才给")
+    p.add_argument("--parallel", type=int, default=1,
+                   help="宿主能派子代理时给 3-5：提取和正文一次发几集，各派一个子代理同时做。不给就一集一集来")
+    p = sub.add_parser("seam", help="并行写完的相邻两集：上一集结尾和下一集开头接不接得上")
+    p.add_argument("--project", default=".")
+    p.add_argument("--range", required=True, help="下一集的集号范围，如 12-15 就看 11|12 … 14|15")
+    p.add_argument("--mark", action="store_true", help="看过、改好了，记下来，next 不再要")
     p = sub.add_parser("init", help="建原剧工作区，或找到已有的（同一部原剧只拉一次模板）")
     p.add_argument("--root", required=True, help="放所有原剧工作区的根目录")
     p.add_argument("--source-title", required=True, help="原剧名（模板的剧名）")
@@ -1678,7 +1837,7 @@ def main():
                 "source": cmd_source, "gate": cmd_gate, "next": cmd_next, "scaffold": cmd_scaffold,
                 "cast": cmd_cast, "brief": cmd_brief, "check": cmd_check, "presence": cmd_presence,
                 "progress": cmd_progress, "init": workspace.cmd_init, "title-check": workspace.cmd_title_check,
-                "variant": workspace.cmd_variant, "deliver": cmd_deliver}[args.cmd](args)
+                "variant": workspace.cmd_variant, "deliver": cmd_deliver, "seam": cmd_seam}[args.cmd](args)
     except (OSError, ValueError, KeyError) as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
         return 1

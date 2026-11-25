@@ -1,6 +1,6 @@
 # drama-clone · 短剧高仿裂变
 
-从逐集拉片、剧情和字幕中提取抽象节拍与台词结构，创作表达全新的短剧，并检查节拍对齐、原剧指纹词、字面重复、字数和制作规则。当前技能版本：**1.8.0**。
+从逐集拉片、剧情和字幕中提取抽象节拍与台词结构，创作表达全新的短剧，并检查节拍对齐、原剧指纹词、字面重复、字数和制作规则。当前技能版本：**1.9.0**。
 
 ## 复制链接给 Agent 安装
 
@@ -47,6 +47,7 @@ git clone https://github.com/zhibolingxi/drama-clone.git "$HOME/.workbuddy/skill
 ```bash
 python3 scripts/clone_check.py --help
 python3 scripts/clone_check.py next --project /path/to/项目 --range 1-14   # 每一步先问它下一步做什么
+python3 scripts/clone_check.py next --project /path/to/项目 --parallel 4  # 宿主能派子代理时：提取和正文一次发 4 集并行
 python3 scripts/clone_check.py voice /path/to/正文.md --min-total 800 --max-tics 0
 python3 scripts/clone_check.py rules /path/to/正文.md
 ```

@@ -19,7 +19,7 @@ metadata:
   - Give me three different settings that follow this drama's episode beats
   - 'Revise per client notes: max 4 speakers per scene, short lines, add character
     bios'
-  version: 1.8.0
+  version: 1.9.0
   author: MaLiAI
 ---
 
@@ -48,14 +48,22 @@ metadata:
 
 ## 怎么执行（每一步都这样）
 
-**活都是你（AI）干，用户只在四处拍板：选外壳、选剧名、认可样集、收交付。** 提取节拍（读原剧、填 `beats/ep-NNN.json`）、build、写圣经和地图、填选角表、写正文、改到 `check` 通过，全部你自己做，一口气做到下一个拍板点，中间不要停下来让用户“逐集阅读”“填入骨架”。`next` 的 `who` 字段会写明这一步是你做还是找用户。
+**活都是你（AI）干，用户只在三处拍板：选外壳和剧名（一次选定）、认可样集、收交付。** 提取节拍（读原剧、填 `beats/ep-NNN.json`）、build、写圣经和地图、填选角表、写正文、改到 `check` 通过，全部你自己做，一口气做到下一个拍板点，中间不要停下来让用户“逐集阅读”“填入骨架”。`next` 的 `who` 字段会写明这一步是你做还是找用户。
 
 **每一步开始前先跑 `next`，照它说的只做一件事。** 它看项目目录里已经有什么，告诉你下一步做什么、跑哪条命令；你不用记整份流程，也不会跳步。
 
 ```bash
-python3 <技能目录>/scripts/clone_check.py next --project <项目目录> --range 1-14 [--min-total 800]
-# 写正文阶段它一次只给一集，并在 model 字段里写明这集用主力模型还是轻量模型
+python3 <技能目录>/scripts/clone_check.py next --project <项目目录> --range 1-14 [--min-total 800] [--parallel 4]
+# 写正文阶段它一次只给一集（--parallel 时一次给几集），并在 model 字段里写明用主力模型还是轻量模型
 ```
+
+**宿主能派子代理就加 `--parallel 3`～`5`。** 整个流程慢在模型一个字一个字地写：94 集那次实跑输出 300 万 token，一集一集排队写就得十几个小时。加了它以后：
+- **提取**：`next` 的 `parallel` 字段一次列几集，每集派一个子代理读原文、填 `beats/ep-NNN.json`，互不依赖。
+- **正文**：样集认可以后，`next` 先让你给一卷里连着的几集定好「出口状态」（`4 卷纲`，每集一两句），再一次发几集，每集一个子代理照自己的任务包写、自己跑 `check`。同时写的集拿不到上一集写出来的结尾，所以照计划的出口状态交接；全部过了 `check` 以后，`next` 给出 `4 衔接`：每对相邻集只列计划出口、上一集最后几行和下一集开头几行，你看一遍、改接不上的几行，再跑 `seam --mark`。
+- **改稿**：几集同时没过，`next` 一次列出来，各派一个子代理改。
+- 一批不跨卷（每 10 集一卷），卷首照样提示开新会话。宿主不支持子代理就不加，一集一集写。
+
+**改稿只改报出的那几行。** `check` 的 `fix` 尽量带「第 N 行」，用编辑工具逐处改，不要整集重写：重写一集又要从头生成一遍，几十条改动里大多只是一行。
 
 三条习惯，保证一次写对、不靠事后返工：
 - **填骨架，不从零写。** 节拍表用 `scaffold` 生成（原剧钩子、时长、台词轮次已经切好）；正文用 `brief` 生成任务单和骨架（每一拍原剧几轮、谁先说，已经换成新剧人名）。原剧有的东西都在骨架里，照着填就对上了。
@@ -64,7 +72,7 @@ python3 <技能目录>/scripts/clone_check.py next --project <项目目录> --ra
 
 ## 先说几件容易出事的
 
-**正文一次只写一集。** 一次回复连写好几集，写到后面字数会一集比一集少，最后出现“（以下略）”“同上”“此处省略”。主力模型也一样，只是比轻模型晚一点出现。所以 `brief` 每集出一套文件（`out/brief-NNN.md`、`draft-NNN.md`、`impl-NNN.md`），`next` 一次只发一集，上一集 `check` 没过就不发下一集。
+**正文一次只写一集。** 一次回复连写好几集，写到后面字数会一集比一集少，最后出现“（以下略）”“同上”“此处省略”。主力模型也一样，只是比轻模型晚一点出现。所以 `brief` 每集出一套文件（`out/brief-NNN.md`、`draft-NNN.md`、`impl-NNN.md`），`next` 一次只发一集，上一集 `check` 没过就不发下一集。并行时也是一个子代理只写一集，不是一个子代理连写几集。
 
 **一集一个任务包，读一次就开写。** `out/brief-NNN.md` 是自带一切的任务包：任务单、骨架表、上一集结尾状态（取自上一集实现表的「出口状态」）、圣经里本集出场的人、地图的对照表和本集分段、定稿样集、三份写作规则，还有写完要跑的 `check` 命令原文。写一集就是“读包 → 写正文和实现表 → 跑 check → 改”，不再去读 `bible.md`、`season-map.md`、`references/`，也不回头读前面几集。每多读一个文件就多一轮，每一轮都要把整个上下文重读一遍：一部 94 集的实跑，输入 4.4 亿 token，模型写出来的只有 300 万。
 
@@ -93,7 +101,7 @@ python3 scripts/clone_check.py init --root <根目录> --source-title <原剧名
 ```
 
 - **开工第一件事就是 init。** 同一部原剧已经有工作区（按模板 id 或原剧名找），它直接复用，并告诉你拉过没有、提取过没有、已经裂变出哪几部；拉过的**不要再拉**，提取过的**不要再提取**。没有才新建。
-- 在**工作区**上跑 `next`：提取 → 热播榜 → 出外壳候选（写进 `shells.md`，用户选）→ 起 5 个剧名、过 `title-check`、用户选 → `variant` 立项。
+- 在**工作区**上跑 `next`：提取 → 热播榜 → 出外壳候选（写进 `shells.md`，每个候选带 3 个过了 `title-check` 的剧名）→ 用户一次选定外壳和剧名 → `variant` 立项。
 - 立项以后在**变体目录** `V01-<剧名>/` 上跑 `next`：圣经、地图、选角、样集、正文、`deliver` 交付。原剧提取和热播榜从工作区读，不复制。
 - 再裂变一部：回到工作区跑 `next`，它会让你在 `shells.md` 追加新一轮候选，并列出已有变体的外壳，新候选和每个已有变体四轴至少三轴不同。
 - 老的单项目目录（`extract/` 直接在项目里）照旧能跑；要从它再裂变，先 init 一个工作区，把 `extract/`、`beat-sheet.json`、`beats-all.json`、`fingerprints-all.json` 挪进 `source/`。
@@ -113,7 +121,7 @@ python3 scripts/clone_check.py init --root <根目录> --source-title <原剧名
 
 ## 工作流
 
-人审闸门只有四个：选外壳、选剧名（第 2 步）、认可样集（第 4 步）、交付（第 5 步）。其余步骤你自己做完，不交给用户。用户明确说“直接出完整剧本”时，前三个可以由你自己定（选最强的外壳和剧名），但要在交付说明里写明。
+人审闸门只有三个：选外壳和剧名（第 2 步，一次选定）、认可样集（第 4 步）、交付（第 5 步）。其余步骤你自己做完，不交给用户。用户明确说“直接出完整剧本”时，前三个可以由你自己定（选最强的外壳和剧名），但要在交付说明里写明。
 
 ### 1 · 提取节拍表、台词结构、指纹清单
 
@@ -124,7 +132,7 @@ python3 scripts/clone_check.py init --root <根目录> --source-title <原剧名
 - 按 `references/dialogue-map.md` 逐集记台词结构：每一拍谁先开口、几个来回、用了什么手法。只记结构，不记原句。
 - **先测每集时长**，不要假设。实测一部爆款前 3 集约 5 分钟，从第 4 集起中位数只有 72 秒。
 - **和用户定体量目标**：每集全文字数下限、口播字数范围、成片时长。用户没说就按原剧实测给建议，问一句再定。定下的数写进设定圣经，之后每批检查都用它。
-- 集数多的，拆给子代理并行提取（任务书模板 `templates/EXTRACT.md`）；宿主不支持子代理就按顺序做。
+- 集数多的，`next --parallel N` 一次列 N 集，每集派一个子代理并行提取（任务书模板 `templates/EXTRACT.md`）；宿主不支持子代理就按顺序做。
 - 合成全季节拍表和指纹表：`python3 scripts/clone_check.py build extract/ beat-sheet.json --out-beats beats-all.json --out-fp fingerprints-all.json`。节拍**只认** `extract/beats/ep-NNN.json`，beat-sheet.json 里手写的 episodes 会被丢掉；合成结果带 `builtFrom`，`gate` 只认带它的节拍表。
 - 校验：`python3 scripts/clone_check.py sheet beats-all.json --manifest extract/manifest.json [--range 1-14]`。它拦：每集少于 4 拍、没写 hook、节拍里混进原剧专名、把有数据的集标成缺集、给真缺的集编节拍。
 - **检查没过就修提取，不许改输入去凑通过**（比如把没提取的集塞进 `gaps`）。修不了就停下告诉用户。
@@ -139,7 +147,7 @@ python3 scripts/clone_check.py init --root <根目录> --source-title <原剧名
 - **选外壳时就查伦理风险**：避开“后妈、继兄、亲爹苛待亲儿子”这类重组家庭设定，改用叔伯、寄养、姑舅关系（见 `references/production-rules.md`）。
 - 原剧的金手指新剧做不到的，要写清用什么替代。
 - 候选写进工作区的 `shells.md`，每轮一节「## 第N轮」。这部原剧已经裂变过的，`next` 会列出已有变体的外壳，新候选和每个已有变体四轴至少三轴不同。
-- **用户选定外壳后，在这一轮末尾写「选定：候选X」，再给这个外壳起 5 个剧名**（规范见 `references/naming.md`），先跑 `clone_check.py title-check`，过了的列给用户选。用户选定剧名后跑 `clone_check.py variant` 立项，建出 `V<编号>-<剧名>/`。后面的步骤都在这个变体目录里做。
+- **每个候选带 3 个剧名**（规范见 `references/naming.md`），9 个一起先跑 `clone_check.py title-check`，没过的换掉，全过了再交给用户。用户一次选定外壳和剧名，在这一轮末尾写「选定：候选X《剧名》」，`next` 就让你直接立项。用户只选了外壳、剧名都不要，写「选定：候选X」，`next` 会让你再起 5 个剧名给用户选。立项跑 `clone_check.py variant`，建出 `V<编号>-<剧名>/`。后面的步骤都在这个变体目录里做。
 
 ### 3 · 设定圣经 + 全季实现地图 + 实现表
 - 圣经、地图、选角表（`cast.json`）、样集认可都放在**变体目录**里，每部新剧一份。圣经里单独写一节「## 人物小传」（每人一段：身份、性格、说话特点、和主角的关系，不写外形），交付时它原样放在剧本开头。和同一部原剧的其他变体别用同一个主角名，`deliver` 会查撞名。
@@ -172,7 +180,7 @@ python3 scripts/clone_check.py init --root <根目录> --source-title <原剧名
   - 括注写在演员需要提示的地方，长短不一，不要句句套“（情绪，动作）”。
   - 剧本开头放人物小传（不写外形）。
   - 第 1 集先给最狠的冲突；不在集中段插闪回；不放下一集一开场就化解的假危机。
-- 集数多的拆批并行写，每个写手在自己那批里也是一集一集写、一集一集过 `check`。**写手任务书必须从 `templates/WRITER.md` 改出来，不要现写**：它带着样集、台词结构图、体量目标、去 AI 味规则和自查命令。现写的任务书最容易漏掉这几样，实测漏了以后全季字数只有要求的一半，AI 腔也回来了。
+- 集数多的用 `next --parallel N` 并行写：一集一个子代理，任务包 `brief-NNN.md` 就是它的全部输入，它写完自己跑 `check` 改到过。宿主不能按集派、只能按批派时，每个写手在自己那批里也是一集一集写、一集一集过 `check`。**写手任务书必须从 `templates/WRITER.md` 改出来，不要现写**：它带着样集、台词结构图、体量目标、去 AI 味规则和自查命令。现写的任务书最容易漏掉这几样，实测漏了以后全季字数只有要求的一半，AI 腔也回来了。
 - 每批写手返回后，主线程**马上**对这批跑 `progress --range <这批> --min-total <下限>`，把它的表原样放进给用户的汇报；没过的集退回去补，补过了再推下一批。主线程还负责中转跨批次的设定：新配角、亲属关系、钱数、道具。
 
 ### 5 · 检查与交付
@@ -218,7 +226,7 @@ python3 $S dup 正文.md extract/corpus.txt --k 8         # 再跑一次 --k 6
 ## 资源
 - `references/`：naming（目录、剧名、交付命名）、beat-sheet（节拍表）、dialogue-map（台词结构图）、fission（外壳裂变）、production-rules（制作规则）、season-run（整季编排）、script-format（正文格式）、anti-ai（去 AI 味）
 - `templates/`：EXTRACT、WRITER、REVISE 三份子代理任务书
-- `scripts/clone_check.py`：`init`、`title-check`、`variant`、`deliver`、`next`、`progress`、`source`、`sheet`、`build`、`align`、`gate`、`fingerprint`、`voice`、`rules`、`dup`，只用 Python 3 标准库，不联网
+- `scripts/clone_check.py`：`init`、`title-check`、`variant`、`deliver`、`next`、`progress`、`seam`、`source`、`sheet`、`build`、`align`、`gate`、`fingerprint`、`voice`、`rules`、`dup`，只用 Python 3 标准库，不联网
 - `scripts/workspace.py`：原剧工作区和变体目录的布局、剧名规则（被 clone_check.py 调用）
 - `scripts/hot_rank.py`：抓红果热播榜
 - `scripts/to_docx.py`：剧本转 Word，需要 python-docx
