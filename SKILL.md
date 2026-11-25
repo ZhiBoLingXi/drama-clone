@@ -19,7 +19,7 @@ metadata:
   - Give me three different settings that follow this drama's episode beats
   - 'Revise per client notes: max 4 speakers per scene, short lines, add character
     bios'
-  version: 1.10.0
+  version: 1.11.0
   author: MaLiAI
 ---
 
@@ -109,6 +109,7 @@ python3 <技能目录>/scripts/clone_check.py progress --project <项目目录> 
 python3 scripts/clone_check.py init --root <根目录> --source-title <原剧名> [--template-id <模板id> --library personal]
 ```
 
+- **init 只在开工跑一次。** 已经有新剧在写时，它的 `next` 直接指向最近动过的那部变体目录，照它跑；之后每一步都跑 `next`，不要反复 init。在工作区上跑 `next` 是再裂变一部，用户没要就不去（`next` 会提示走错了）。**不读别的变体目录**：V02 不借 V01 的选角表、圣经、正文。
 - **开工第一件事就是 init。** 同一部原剧已经有工作区（按模板 id 或原剧名找），它直接复用，并告诉你拉过没有、提取过没有、已经裂变出哪几部；拉过的**不要再拉**，提取过的**不要再提取**。没有才新建。
 - 在**工作区**上跑 `next`：提取 → 热播榜 → 出外壳候选（写进 `shells.md`，每个候选带 3 个过了 `title-check` 的剧名）→ 用户一次选定外壳和剧名 → `variant` 立项。
 - 立项以后在**变体目录** `V01-<剧名>/` 上跑 `next`：圣经、地图、选角、样集、正文、`deliver` 交付。原剧提取和热播榜从工作区读，不复制。

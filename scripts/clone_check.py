@@ -356,9 +356,11 @@ def load_shapes(*dirs):
 
 def pick_shapes(shapes, text, k=4):
     """和这一集节拍、原剧语气对得上的形状，命中的 tag 越多越先选，同一场景类型只选一条。"""
-    scored = sorted(((sum(text.count(t) for t in s.get("tags", [])), i) for i, s in enumerate(shapes)), key=lambda x: (-x[0], x[1]))
+    # 命中一样多时，带名剧原话的先选：真人说过的比自编的更有说服力
+    scored = sorted((-sum(text.count(t) for t in s.get("tags", [])), not s.get("refs"), i) for i, s in enumerate(shapes))
     got, scenes = [], set()
-    for c, i in scored:
+    for neg, _, i in scored:
+        c = -neg
         s = shapes[i]
         if c and s.get("scene") not in scenes:
             got.append(s)
@@ -383,8 +385,16 @@ def cmd_library(args):
         if not s.get("tags"):
             problems.append(f"{sid}：缺 tags")
         ex = s.get("example") or []
-        if not 2 <= len(ex) <= 5 or any(len(x) != 2 for x in ex):
+        refs = s.get("refs") or []
+        if not ex and not refs:
+            problems.append(f"{sid}：example 和 refs 至少要有一个")
+        if ex and (not 2 <= len(ex) <= 5 or any(len(x) != 2 for x in ex)):
             problems.append(f"{sid}：example 要 2-5 轮，每轮 [说话人, 台词]")
+        for r in refs:
+            if not (r.get("work") and r.get("url") and r.get("lines")) or any(len(x) != 2 for x in r["lines"]):
+                problems.append(f"{sid}：refs 每条要有 work、url、lines（[说话人, 原台词]）")
+            elif len(r["lines"]) > 4:
+                problems.append(f"{sid}：refs 只收短的，最多 4 轮：{r['work']}")
         for who, line in (x for x in ex if len(x) == 2):
             if len(HAN.findall(line)) > 20:
                 problems.append(f"{sid}：例句超过 20 字：{line}")
@@ -394,6 +404,31 @@ def cmd_library(args):
     print(json.dumps({"shapes": len(shapes), "scenes": dict(Counter(s.get("scene") for s in shapes)),
                       "problems": problems, "passed": not problems}, ensure_ascii=False, indent=1))
     return 0 if not problems else 2
+
+
+REF_K = 6
+
+
+def ref_hits(lines, k=REF_K):
+    """台词里和口语库名剧原话连续 k 字相同的地方：[(行号, 出处, 片段)]。"""
+    grams = {}
+    for s in load_shapes():
+        for r in s.get("refs") or []:
+            for _, x in r.get("lines", []):
+                h = "".join(HAN.findall(x))
+                for i in range(len(h) - k + 1):
+                    grams.setdefault(h[i:i + k], r["work"])
+    hits = []
+    for ln, l in enumerate(lines, 1):
+        m = SPEECH.match(l)
+        if not m:
+            continue
+        h = "".join(HAN.findall(m.group(3)))
+        for i in range(len(h) - k + 1):
+            if h[i:i + k] in grams:
+                hits.append((ln, grams[h[i:i + k]], h[i:i + k]))
+                break
+    return hits
 
 
 SUBTEXT = re.compile(r"^-\s*(E\d+-B\d+)\s*潜台词[ \t]*[:：][ \t]*(.*)$", re.M)
@@ -1218,7 +1253,13 @@ def cmd_brief(args):
         if picked:
             brief += ["", "## 口语示例（照形状学，词句全换成本剧的人和事，不照抄）", ""]
             for s in picked:
-                brief += [f"**{s['scene']}·{s['technique']}**", *[f"> {w}：{x}" for w, x in s["example"]], f"（{s['note']}）", ""]
+                brief.append(f"**{s['scene']}·{s['technique']}**")
+                for r in (s.get("refs") or [])[:1]:  # 名剧里真人怎么说：只看形状，原句一个字都不进剧本，check 会查
+                    brief += [f"名剧原话（{r['work']}{'，' + r['context'] if r.get('context') else ''}）："]
+                    brief += [f"> {w}：{x}" for w, x in r["lines"]]
+                if s.get("example"):
+                    brief += ["换个场子的写法：", *[f"> {w}：{x}" for w, x in s["example"]]]
+                brief += [f"（{s['note']}）", ""]
         bad = counter_examples(os.path.dirname(os.path.abspath(args.out)), args.out)
         if bad:
             brief += ["", "## 别写成这样（本项目被拦下、被用户圈出来的写法）", "", *[f"- {x}" for x in bad], ""]
@@ -1481,6 +1522,9 @@ def cmd_check(args):
                 out.append(f"{where} 第{n}集「{k}」这类反应用了 {c} 次，一集只留一次，其余换成这个人自己的动作或一句话")
             elif near:
                 out.append(f"{where} 第{n}集又用了「{k}」这类反应，第{near[-1]}集刚用过（{STOCK_GAP} 集内不重复），换成这个人自己的反应")
+    # 口语库里的名剧原话只给看形状：连续 6 个字撞上就算照抄
+    for ln, w, g in ref_hits(lines):
+        out.append(f"第 {ln} 行和{w}的原台词撞了「{g}」：口语库的名台词只学说话的形状，换成这个人自己的话")
     # 潜台词：骨架里每拍一行，写台词之前先填。没填的台词多半是把信息直说出来
     if args.impl and os.path.exists(args.impl):
         out += [f"实现表 {b} 的「潜台词」还空着：先写这个人这一拍想要什么、什么话不能直说，再照它改台词"
@@ -1708,19 +1752,22 @@ def workspace_step(L, say, me):
     W = L["W"]
     vs = variants(W)
     prior = "；".join(f"{v['id']}《{v['title']}》{v.get('axes') or v.get('shell', '')}" for v in vs)
-    newest = max((os.path.getmtime(os.path.join(W, v["dir"], "variant.json")) for v in vs
-                  if os.path.exists(os.path.join(W, v["dir"], "variant.json"))), default=0)
     sh = L["shells"]
-    if not os.path.exists(sh) or os.path.getmtime(sh) <= newest:
+    head = f"## 第{len(vs) + 1}轮"
+    going = workspace.continue_cmds(W, me)
+    if going and head not in _read(sh):
+        # 已经有新剧在写：回工作区多半是走错了。用户明确要再裂变一部，才在 shells.md 加新一轮的标题
+        return say("2 已有变体", "这部原剧已经有新剧在写，接着写就跑 continue 里那部的 next（最近动过的排第一），不要在工作区出新外壳，"
+                   "也不要读别的变体目录的文件。只有用户明确说「再裂变一部」时，才在 shells.md 末尾加一行「" + head + "」，再跑工作区的 next。",
+                   {"continue": going})
+    sec = _read(sh).split(head)[-1] if head in _read(sh) else ""
+    if not re.search(r"^###\s*候选", sec, re.M):
         return say("2 外壳", f"你先读 market/ 里最新的热播榜摘要，再自己出 3 个外壳候选，写进 {sh}"
                    f"（追加一节「## 第{len(vs) + 1}轮」，格式见 references/fission.md，每个候选写「榜单依据」和一行「剧名候选：」3 个剧名）。"
                    f"9 个剧名先一起跑 `python3 {me} title-check --workspace {W} <剧名…>`，没过的换掉再跑，全过了再停下来给用户选："
                    "用户一次选定外壳和剧名，少等一轮。"
                    + (f"这部原剧已经裂变过：{prior}。新候选和每一个已有变体之间，外壳四轴至少三轴不同。" if vs else ""))
     text = open(sh, encoding="utf-8").read()
-    head = f"## 第{len(vs) + 1}轮"
-    if head not in text:
-        return say("2 外壳", f"{sh} 里没有「{head}」这一节。这一轮的 3 个候选写在这个标题下面（前面几轮的别动），再停下来给用户选。")
     picked = re.search(r"^选定[:：]\s*(候选\s*\S+?)\s*[《「](.+?)[》」]", text.split(head)[-1], re.M)
     if picked:
         # 外壳和剧名一起选定：直接立项，不再单独问剧名

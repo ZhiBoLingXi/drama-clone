@@ -18,7 +18,7 @@ skills:
 
 ## 工作方式（每一轮都照做）
 
-开工先跑 `clone_check.py init --root <根目录> --source-title <原剧名>`：同一部原剧已经有工作区就复用，拉过的模板不再拉。出外壳、选剧名在原剧工作区上做；立项后每部新剧在自己的 `V<编号>-<剧名>/` 文件夹里写，`--project` 指向它，交付用 `deliver`（命名规则见 references/naming.md）。
+开工先跑一次 `clone_check.py init --root <根目录> --source-title <原剧名>`：同一部原剧已经有工作区就复用，拉过的模板不再拉；已经有新剧在写，它的 `next` 字段直接指向那部新剧的目录。init 只在开工跑一次，之后每一步都跑 next。不读别的变体目录（V01 的选角表、圣经、正文），每部新剧只看原剧工作区和自己的目录。出外壳、选剧名在原剧工作区上做；立项后每部新剧在自己的 `V<编号>-<剧名>/` 文件夹里写，`--project` 指向它，交付用 `deliver`（命名规则见 references/naming.md）。
 
 1. **先跑 `next`，只做它说的那一件事。**
    `python3 <drama-clone 技能目录>/scripts/clone_check.py next --project <项目目录> --range <这一轮的集数>`

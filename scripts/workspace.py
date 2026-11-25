@@ -91,16 +91,36 @@ def cmd_init(args):
     raw = sorted(os.path.basename(p) for p in glob.glob(os.path.join(L["ex"], "raw", "*.json")))
     extracted = os.path.exists(os.path.join(L["ex"], "manifest.json"))
     vs = variants(W)
-    print(json.dumps({
-        "workspace": W, "created": created, "template": t,
-        "pulled": raw, "extracted": extracted,
-        "variants": [f"{v['id']} 《{v['title']}》 {v.get('status', '')}" for v in vs],
-        "todo": ("这部原剧已经拉过、提取过，不要再拉模板。" if extracted else
-                 ("已经拉了一部分窗口（见 pulled），只补缺的窗口，拉过的不要重拉。" if raw else
-                  "还没拉。照 SKILL.md「输入从哪来」按集窗口拉模板，存到 source/extract/raw/。")),
-        "next": f"python3 {os.path.join(os.path.dirname(os.path.abspath(__file__)), 'clone_check.py')} next --project {W}"},
-        ensure_ascii=False, indent=1))
+    me = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clone_check.py")
+    todo = ("这部原剧已经拉过、提取过，不要再拉模板。" if extracted else
+            ("已经拉了一部分窗口（见 pulled），只补缺的窗口，拉过的不要重拉。" if raw else
+             "还没拉。照 SKILL.md「输入从哪来」按集窗口拉模板，存到 source/extract/raw/。"))
+    res = {"workspace": W, "created": created, "template": t, "pulled": raw, "extracted": extracted,
+           "variants": [f"{v['id']} 《{v['title']}》 {v.get('status', '')}" for v in vs]}
+    going = continue_cmds(W, me)
+    if going:
+        # 有在写的新剧：接着写它，next 指向变体目录。回工作区跑 next 是再裂变一部，用户没要就别去
+        res["todo"] = todo + "已经有在写的新剧，接着写就用下面 continue 里那部的命令（最近动过的排第一）。" \
+                             "用户明确要再裂变一部新剧时，才回工作区跑 next 出新一轮外壳。init 开工跑一次就够，之后每一步都跑 next。"
+        res["continue"] = going
+        res["next"] = going[0]["next"]
+    else:
+        res["todo"] = todo
+        res["next"] = f"python3 {me} next --project {W}"
+    print(json.dumps(res, ensure_ascii=False, indent=1))
     return 0
+
+
+def continue_cmds(W, me):
+    """工作区里没交付的新剧，最近动过的排前面：[{id, title, next}]。"""
+    rows = []
+    for v in variants(W):
+        d = os.path.join(W, v["dir"])
+        if (v.get("status") or "").startswith("已交付") or not os.path.isdir(d):
+            continue
+        mt = max((os.path.getmtime(os.path.join(r, f)) for r, _, fs in os.walk(d) for f in fs), default=os.path.getmtime(d))
+        rows.append((mt, {"id": v["id"], "title": v["title"], "next": f"python3 {me} next --project {d}"}))
+    return [r for _, r in sorted(rows, key=lambda x: -x[0])]
 
 
 def hot_titles(W):
@@ -179,7 +199,9 @@ def cmd_variant(args):
     _dump(L["variants"], reg)
     print(json.dumps({"variant": d, "id": vid, "title": t,
                       "next": f"python3 {os.path.join(os.path.dirname(os.path.abspath(__file__)), 'clone_check.py')} next --project {d}",
-                      "note": "以后这部新剧的所有命令都用 --project 指向这个变体目录；原剧提取和热播榜从工作区共用，不要再拉"},
+                      "note": "以后这部新剧的所有命令都用 --project 指向这个变体目录，下一步就跑上面的 next，不要再跑 init，也不要回工作区跑 next。"
+                              "原剧提取和热播榜从工作区共用，不要再拉。别的变体目录（V01 的选角表、圣经、正文）一律不读：这部的人物从原剧提取和自己的圣经来，"
+                              "选角表用 next 给的 cast 命令现生成"},
                      ensure_ascii=False, indent=1))
     return 0
 
