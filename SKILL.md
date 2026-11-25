@@ -19,7 +19,7 @@ metadata:
   - Give me three different settings that follow this drama's episode beats
   - 'Revise per client notes: max 4 speakers per scene, short lines, add character
     bios'
-  version: 1.7.0
+  version: 1.8.0
   author: MaLiAI
 ---
 
@@ -48,7 +48,7 @@ metadata:
 
 ## 怎么执行（每一步都这样）
 
-**活都是你（AI）干，用户只在三处拍板：选外壳、认可样集、收交付。** 提取节拍（读原剧、填 `beats/ep-NNN.json`）、build、写圣经和地图、填选角表、写正文、改到 `check` 通过，全部你自己做，一口气做到下一个拍板点，中间不要停下来让用户“逐集阅读”“填入骨架”。`next` 的 `who` 字段会写明这一步是你做还是找用户。
+**活都是你（AI）干，用户只在四处拍板：选外壳、选剧名、认可样集、收交付。** 提取节拍（读原剧、填 `beats/ep-NNN.json`）、build、写圣经和地图、填选角表、写正文、改到 `check` 通过，全部你自己做，一口气做到下一个拍板点，中间不要停下来让用户“逐集阅读”“填入骨架”。`next` 的 `who` 字段会写明这一步是你做还是找用户。
 
 **每一步开始前先跑 `next`，照它说的只做一件事。** 它看项目目录里已经有什么，告诉你下一步做什么、跑哪条命令；你不用记整份流程，也不会跳步。
 
@@ -84,22 +84,36 @@ python3 <技能目录>/scripts/clone_check.py progress --project <项目目录> 
 
 **脚本和资料按本技能目录找。** 下文的 `scripts/`、`references/`、`templates/` 都相对于这份 SKILL.md 所在的目录。先确认这个绝对路径，派子代理时写进任务书，因为子代理的工作目录通常不在这里。**检查脚本跑不起来就停下**，告诉用户哪条命令失败、报了什么错；不许改成“手动检查”，再在汇报里写“检查通过”。
 
+## 一部原剧一个工作区，一部新剧一个文件夹
+
+一部原剧可以裂变出好几部新剧。**原剧只拉一次、只提取一次**，所有变体共用；每部新剧一个变体文件夹，交付件统一命名。目录、剧名、交付命名的全部规则见 `references/naming.md`。
+
+```bash
+python3 scripts/clone_check.py init --root <根目录> --source-title <原剧名> [--template-id <模板id> --library personal]
+```
+
+- **开工第一件事就是 init。** 同一部原剧已经有工作区（按模板 id 或原剧名找），它直接复用，并告诉你拉过没有、提取过没有、已经裂变出哪几部；拉过的**不要再拉**，提取过的**不要再提取**。没有才新建。
+- 在**工作区**上跑 `next`：提取 → 热播榜 → 出外壳候选（写进 `shells.md`，用户选）→ 起 5 个剧名、过 `title-check`、用户选 → `variant` 立项。
+- 立项以后在**变体目录** `V01-<剧名>/` 上跑 `next`：圣经、地图、选角、样集、正文、`deliver` 交付。原剧提取和热播榜从工作区读，不复制。
+- 再裂变一部：回到工作区跑 `next`，它会让你在 `shells.md` 追加新一轮候选，并列出已有变体的外壳，新候选和每个已有变体四轴至少三轴不同。
+- 老的单项目目录（`extract/` 直接在项目里）照旧能跑；要从它再裂变，先 init 一个工作区，把 `extract/`、`beat-sheet.json`、`beats-all.json`、`fingerprints-all.json` 挪进 `source/`。
+
 ## 输入从哪来
 
-- **拉片模板（mali-story 连接器）**，照下面三步取，不要换别的词搜：
+- **拉片模板（mali-story 连接器）**，拉到工作区的 `source/extract/raw/`。先看那里已经有哪些窗口，**只补缺的**。照下面三步取，不要换别的词搜：
   1. `search_deconstruction_templates`：`query` 填**剧名本身**（按标题做字面子串匹配，搜“爆款”“模板”“剧本”这类词必然是空的）；先搜 `library: "personal"`。结果为空且带 `otherLibrary` 时，按它提示换库再搜一次。两个库都空，就问用户确切剧名，不要自己猜。
   2. 拿到模板 id 后，**按集窗口分批取**（`library` 与搜索时相同）：
      - 先不带参数调一次 `get_deconstruction_template`，只返回目录：`content.episodeOutlines[]` 列出已拉片的集号（`episodeIndex`），`hasRawMd` 标出哪些集有拉片。**集号可能不连续**，`episodeProjection.totalEpisodes` 是已拉片的条数，不是全剧集数（实测一部 67 集的剧，只拉了 56 集）。
      - 再按每 10 集一窗口调：`include: ["rawMd", "outlineMd"]`，`episode_from`/`episode_to` 依次为 1-10、11-20……直到目录里**最大的集号**，不要只取到 `totalEpisodes`。窗口里有缺号的集是正常的。每个窗口的结果原样存成 `extract/raw/win-NN.json`，**不要读内容**。窗口超过 10 集会被拒绝；报 `MCP_RESPONSE_TOO_LARGE` 时把这一窗拆成两半重取。
      - 个人库的模板也可以逐集调 `get_deconstruction_evidence`，存成 `extract/raw/ep-NNN.json`。官方模板不支持这个工具，只能走窗口。
-  3. `python3 scripts/clone_check.py source extract/raw --out extract/`。目录里窗口文件和逐集文件混放也能读。
+  3. `python3 scripts/clone_check.py source <工作区>/source/extract/raw --out <工作区>/source/extract`。目录里窗口文件和逐集文件混放也能读。
   它写出 `extract/source/ep-NNN.txt`（集纲 + 按顺序的全部台词 + Storyline）、`extract/manifest.json`（每集台词轮数、口播字数、时长、原剧钩子、真实缺集、原剧人名）和 `extract/corpus.txt`（查重语料）。后面所有检查都拿 manifest 当原剧的标准答案。
 - **没有平台**：让用户提供原剧的逐集剧情和字幕，或者集纲、剧本文本。
 - 字幕常常只存到半集，缺的部分按剧情推，并标注“推”；整集缺失就标成缺口，不编造。
 
 ## 工作流
 
-人审闸门只有三个：选外壳（第 2 步）、认可样集（第 4 步）、交付（第 5 步）。其余步骤你自己做完，不交给用户。用户明确说“直接出完整剧本”时可以跳过前两个，但要在交付说明里写明。
+人审闸门只有四个：选外壳、选剧名（第 2 步）、认可样集（第 4 步）、交付（第 5 步）。其余步骤你自己做完，不交给用户。用户明确说“直接出完整剧本”时，前三个可以由你自己定（选最强的外壳和剧名），但要在交付说明里写明。
 
 ### 1 · 提取节拍表、台词结构、指纹清单
 
@@ -117,15 +131,18 @@ python3 <技能目录>/scripts/clone_check.py progress --project <项目目录> 
 - **闸门**：`sheet` 没过，不进第 2 步。
 
 ### 2 · 裂变外壳（人审）
-- **先抓热播榜**：`python3 scripts/hot_rank.py --out <项目目录>/market`，抓红果短剧热播榜（https://hongguoduanju.com/rank/hot-drama），写出 `market/hot-YYYYMMDD.md`：题材和形式分布、上榜的续季、每部剧一行。`next` 会在出外壳前要求一份一周内的榜单。宿主不让脚本联网时，用自己的网页工具存下页面 HTML，再跑 `--html <文件>`；两条路都不通，就在 `market/unavailable.txt` 写一句原因、告诉用户，接着出外壳。**不要凭记忆编榜单。**
+- 这一步在**原剧工作区**上做，`next --project <工作区>` 带着走。
+- **先抓热播榜**：`python3 scripts/hot_rank.py --out <工作区>/market`（一周内抓过的所有变体共用），抓红果短剧热播榜（https://hongguoduanju.com/rank/hot-drama），写出 `market/hot-YYYYMMDD.md`：题材和形式分布、上榜的续季、每部剧一行。`next` 会在出外壳前要求一份一周内的榜单。宿主不让脚本联网时，用自己的网页工具存下页面 HTML，再跑 `--html <文件>`；两条路都不通，就在 `market/unavailable.txt` 写一句原因、告诉用户，接着出外壳。**不要凭记忆编榜单。**
 - 按 `references/fission.md` 出 3 个外壳候选：地域行业、主角身份、底牌形式、关系载体，四轴至少换三轴。每个候选写一行「榜单依据」：借了榜上第几名的哪种设定元素或标题句式，或者为什么故意避开榜上扎堆的题材。榜上的剧名、人名、具体桥段不用，那是别人的作品。
 - 每个候选都要做**金手指能力对位**：原剧前 15 集每次用金手指办成的事，新外壳都要办得成。超自然换成纯技艺最容易塌。
 - 候选只写概念，**不写样稿场景和台词**。
 - **选外壳时就查伦理风险**：避开“后妈、继兄、亲爹苛待亲儿子”这类重组家庭设定，改用叔伯、寄养、姑舅关系（见 `references/production-rules.md`）。
 - 原剧的金手指新剧做不到的，要写清用什么替代。
-- 用户选定外壳之后才往下走。
+- 候选写进工作区的 `shells.md`，每轮一节「## 第N轮」。这部原剧已经裂变过的，`next` 会列出已有变体的外壳，新候选和每个已有变体四轴至少三轴不同。
+- **用户选定外壳后，在这一轮末尾写「选定：候选X」，再给这个外壳起 5 个剧名**（规范见 `references/naming.md`），先跑 `clone_check.py title-check`，过了的列给用户选。用户选定剧名后跑 `clone_check.py variant` 立项，建出 `V<编号>-<剧名>/`。后面的步骤都在这个变体目录里做。
 
 ### 3 · 设定圣经 + 全季实现地图 + 实现表
+- 圣经、地图、选角表（`cast.json`）、样集认可都放在**变体目录**里，每部新剧一份。圣经里单独写一节「## 人物小传」（每人一段：身份、性格、说话特点、和主角的关系，不写外形），交付时它原样放在剧本开头。和同一部原剧的其他变体别用同一个主角名，`deliver` 会查撞名。
 - 设定圣经：人物（身份、性格；**每个主要人物一节，写「说话：」和「示例台词：」2-3 句**，人与人的口吻要拉开，`next` 会查，见 `references/anti-ai.md`「人物口吻」；**外形交给资产，不写进剧本**）、关系、谁知道什么、金手指规则、地点、钱账，以及**全季龙套名册**（每个龙套一个唯一称呼）。
 - **全季实现地图**由主线程写：原剧元素与新剧元素的对照表（同一元素全季只用一种换法），分段换法，每批交接状态。
 - 实现表每集 5-8 行：`对标节拍：EN-B1…`、`原剧钩子：`（从 manifest 原样抄）、`新剧钩子：`，每拍新剧怎么演，出口状态。
@@ -159,7 +176,9 @@ python3 <技能目录>/scripts/clone_check.py progress --project <项目目录> 
 - 每批写手返回后，主线程**马上**对这批跑 `progress --range <这批> --min-total <下限>`，把它的表原样放进给用户的汇报；没过的集退回去补，补过了再推下一批。主线程还负责中转跨批次的设定：新配角、亲属关系、钱数、道具。
 
 ### 5 · 检查与交付
-主线程**自己重跑**下面这些检查，不信子代理的自报：实测一批自称“没有超长台词”，复查出 30 条；另一次子代理找不到脚本，却回报“四道检查全过”。`S` 是本技能 `scripts/clone_check.py` 的绝对路径，阈值用第 1 步定下的数：
+**变体项目用 `deliver` 出交付包**：`python3 scripts/clone_check.py deliver --project <变体目录> --min-total <下限>`。它只在全部集都过了 `check`、圣经有「## 人物小传」时才出包，写进 `delivery/`：`《剧名》剧本_v<N>_<日期>.md/.docx`、`《剧名》原剧对照表_v<N>.md`、`《剧名》交付说明_v<N>.md`（字数、检查结果、和同一原剧其他变体的查重和撞名、以前的版本）。版本号自动加一，稿子没改就不出新版。drama-review 的报告存成 `《剧名》审查报告_v<N>.md` 放进同一个目录。命名规则见 `references/naming.md`，交付件只放这几种，过程文件留在 `out/`。
+
+下面这些单项检查，老的单项目目录照这个手动跑；变体项目里 `deliver` 已经跑了合并稿的 gate 和字数，想看单项再跑。主线程**自己重跑**下面这些检查，不信子代理的自报：实测一批自称“没有超长台词”，复查出 30 条；另一次子代理找不到脚本，却回报“四道检查全过”。`S` 是本技能 `scripts/clone_check.py` 的绝对路径，阈值用第 1 步定下的数：
 
 ```bash
 python3 $S gate 正文.md --extract extract --sheet beats-all.json --impl 实现表.md --pair-out 对照.md
@@ -184,7 +203,7 @@ python3 $S dup 正文.md extract/corpus.txt --k 8         # 再跑一次 --k 6
 - 出 Word：`python3 scripts/to_docx.py 剧本.md 剧本.docx`。
 
 ### 6 · 按反馈改稿
-涉及全季的意见（人物身份、格式、台词长度），按 `templates/REVISE.md` 拆批改；客户最先细看的前 10 集由主线程自己改。机械改名先用脚本全局替换，再逐句改称呼和语义。整套编排的经验见 `references/season-run.md`。
+改稿在原来的变体目录里改 `out/draft-NNN.md`，改完每集过 `check`，再跑一次 `deliver` 出 v2（旧版本留着，交付说明里列版本记录），不要另开文件夹。涉及全季的意见（人物身份、格式、台词长度），按 `templates/REVISE.md` 拆批改；客户最先细看的前 10 集由主线程自己改。机械改名先用脚本全局替换，再逐句改称呼和语义。整套编排的经验见 `references/season-run.md`。
 
 ## 红线
 - 不搬原剧有辨识度的台词，不用原剧的人名地名、标志道具、口头禅。
@@ -197,7 +216,9 @@ python3 $S dup 正文.md extract/corpus.txt --k 8         # 再跑一次 --k 6
 - 检查不过时，改稿件或提取，不改检查的输入（gaps、指纹表、阈值）去凑通过。确实要放宽的，问用户。
 
 ## 资源
-- `references/`：beat-sheet（节拍表）、dialogue-map（台词结构图）、fission（外壳裂变）、production-rules（制作规则）、season-run（整季编排）、script-format（正文格式）、anti-ai（去 AI 味）
+- `references/`：naming（目录、剧名、交付命名）、beat-sheet（节拍表）、dialogue-map（台词结构图）、fission（外壳裂变）、production-rules（制作规则）、season-run（整季编排）、script-format（正文格式）、anti-ai（去 AI 味）
 - `templates/`：EXTRACT、WRITER、REVISE 三份子代理任务书
-- `scripts/clone_check.py`：`source`、`sheet`、`build`、`align`、`gate`、`fingerprint`、`voice`、`rules`、`dup`，只用 Python 3 标准库，不联网
+- `scripts/clone_check.py`：`init`、`title-check`、`variant`、`deliver`、`next`、`progress`、`source`、`sheet`、`build`、`align`、`gate`、`fingerprint`、`voice`、`rules`、`dup`，只用 Python 3 标准库，不联网
+- `scripts/workspace.py`：原剧工作区和变体目录的布局、剧名规则（被 clone_check.py 调用）
+- `scripts/hot_rank.py`：抓红果热播榜
 - `scripts/to_docx.py`：剧本转 Word，需要 python-docx

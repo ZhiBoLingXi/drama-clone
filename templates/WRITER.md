@@ -4,7 +4,8 @@
 
 你负责新剧《{新剧名}》第 {起} 到第 {止} 集，一集一集来：每集先写**实现表**，再写**完整正文**。这是一部高仿短剧：和原剧《{原剧名}》逐集对齐节拍和台词结构，但人物、地点、道具、具体桥段和每一句台词都是新写的。
 
-项目目录：`{项目目录}`，下文的路径都相对于它。技能目录：`{技能目录}`。
+项目目录：`{项目目录}`（这部新剧的变体目录 `V<编号>-<剧名>/`），`out/`、`bible.md`、`season-map.md` 都相对于它。技能目录：`{技能目录}`。
+原剧的提取产物在原剧工作区里，所有变体共用：提取目录 `{提取目录}`（`<原剧工作区>/source/extract`），节拍表 `{节拍表}`（`<原剧工作区>/source/beats-all.json`），指纹表 `{指纹表}`，选角表 `{选角表}`（`{项目目录}/cast.json`）。下文的 `{提取目录}` 等都换成绝对路径。
 
 ## 硬规则
 - **不要派子代理**，全部自己做。
@@ -17,7 +18,7 @@
 - **正文直接写进骨架**：每个 `<!-- EN-Bk｜功能｜几轮：说话顺序 -->` 注释下面写这一拍，轮次和说话顺序照注释来，每句话自己写。注释留着别删，出 Word 时会自动去掉。
 - **不许用占位写法**：「略」「同上」「此处省略」「以此类推」「中间若干轮」都不行，每一拍都要写成台词和 △。`check` 会拦。
 - **一集写完立刻跑 `check`**，把 `fix` 里每一条改掉，过了再写下一集（NNN 换成集号）：
-  `python3 {技能目录}/scripts/clone_check.py check out/draft-NNN.md --extract extract --sheet beats-all.json --impl out/impl-NNN.md --min-total {全文字数下限}`
+  `python3 {技能目录}/scripts/clone_check.py check out/draft-NNN.md --extract {提取目录} --sheet {节拍表} --impl out/impl-NNN.md --cast {选角表} --min-total {全文字数下限}`（任务包里已经写好这条命令，照抄就行）
 - 实现表骨架里的「原剧钩子」已填好，你补「新剧钩子」和「出口状态」，每拍一行写怎么演。下一集的任务单会读这一集的出口状态，所以写下一集之前，对下一集重跑一次 `brief NNN`（只重写任务单，不动你写好的骨架）。
 - 前面几集的正文不用回头读，接戏看上一集的「出口状态」就够了。
 - **出场照任务单的「本集出场」**。要多加人，在实现表这一集写「加人：名字 — 理由」；有人离开写「离场：名字 — 原因」；离场的人再出现先写「回归：名字 — 怎么回来的」。规则见 `references/production-rules.md`「出场逻辑」，`check` 会查。
@@ -25,13 +26,13 @@
 ## 读什么
 **每集只读这一集的任务包 `out/brief-NNN.md`，读一次就开写。** 它已经带上：骨架表（每拍几轮、谁先说、多长）、原剧钩子、上一集结尾状态、圣经里本集出场的人、地图的对照表和本集分段、定稿样集、正文格式 / 去 AI 味 / 制作规则，以及写完要跑的 `check` 命令。
 - 不用再读 `bible.md`、`season-map.md`、`references/`，也不回头读前面几集的正文。每多读一个文件，就多一轮重读整个上下文。
-- 包里确实缺你要的东西（比如一个没摘进来的配角），再去读对应文件的那一段。原剧细节要看再读 `extract/source/ep-NNN.txt`，只用来理解，不许照搬。
+- 包里确实缺你要的东西（比如一个没摘进来的配角），再去读对应文件的那一段。原剧细节要看再读 `{提取目录}/source/ep-NNN.txt`，只用来理解，不许照搬。
 
 ## 输出 1：实现表 `out/impl-NNN.md`（每集一个）
 ```
 ## 第N集
 对标节拍：EN-B1, EN-B2, …（全部列上；新剧自己加的戏写“新增”）
-原剧钩子：（从 extract/manifest.json 的 hookSrc 原样抄）
+原剧钩子：（任务包里已填好；要核对看 {提取目录}/manifest.json 的 hookSrc）
 新剧钩子：停在哪一帧，形状对齐原剧钩子
 - B1 → 新剧里怎么演（一行）
 - 出口状态：谁知道了什么、钱和物、欠着谁、哪条线没收
@@ -42,7 +43,7 @@
 - **体量**：每集全文 ≥{全文字数下限} 字（场头、△、括注、台词全算），口播 {口播字数范围} 字，成片约 {时长} 秒。全文下限没写到，就是这集没写完。字数靠戏撑：多一轮交锋、围观插话、道具推进、反转；不靠环境描写、心理旁白、修饰语凑。
 - 场次跟着原剧走，同一个地点连着演的戏不要切碎。
 - 对着台词结构图一拍一拍写：每一拍的轮次、发言顺序、手法都要对上。**内容和措辞全部自己写，不许逐句翻译原句。**
-- 每集停在钩子上，钩子的形状对齐原剧的 hook。原剧钩子在 `extract/manifest.json` 里，写之前先读。
+- 每集停在钩子上，钩子的形状对齐原剧的 hook。原剧钩子在 `{提取目录}/manifest.json` 里，写之前先读。
 - 一集只写这一集的节拍。后面集的戏（时间跳跃、离婚、新人物登场）提前演，就是错位。
 - 制作规则：
   - 每场说话的人不超过 4 个，高潮戏靠拆场，不靠禁言。
@@ -58,12 +59,12 @@
 ```bash
 S={技能目录}/scripts/clone_check.py
 cat out/draft-{起..止}.md > out/batch-AAA-BBB.md; cat out/impl-{起..止}.md > out/batch-impl-AAA-BBB.md   # 按集号顺序
-python3 $S align beats-all.json out/batch-impl-AAA-BBB.md          # 对齐率 ≥85%
-python3 $S fingerprint fingerprints-all.json out/batch-AAA-BBB.md --manifest extract/manifest.json
+python3 $S align {节拍表} out/batch-impl-AAA-BBB.md          # 对齐率 ≥85%
+python3 $S fingerprint {指纹表} out/batch-AAA-BBB.md --manifest {提取目录}/manifest.json
 python3 $S voice out/batch-AAA-BBB.md --min-total {全文字数下限} --max-tics 0 --max-run 3   # 必须 passed，placeholderEps 必须为空
 python3 $S rules out/batch-AAA-BBB.md                        # 必须 passed
-python3 $S dup out/batch-AAA-BBB.md extract/corpus.txt --k 8
-python3 $S gate out/batch-AAA-BBB.md --extract extract --sheet beats-all.json --impl out/batch-impl-AAA-BBB.md --pair-out out/对照_AAA-BBB.md   # 必须 passed
+python3 $S dup out/batch-AAA-BBB.md {提取目录}/corpus.txt --k 8
+python3 $S gate out/batch-AAA-BBB.md --extract {提取目录} --sheet {节拍表} --impl out/batch-impl-AAA-BBB.md --pair-out out/对照_AAA-BBB.md   # 必须 passed
 ```
 - **脚本跑不起来就停下**，在返回里写明哪条命令、报了什么错。不许改成“手动检查”再报通过。
 - `voice` 没过的集，补戏补到过为止；补的时候照样守去 AI 味的规则。

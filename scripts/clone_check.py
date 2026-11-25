@@ -21,6 +21,10 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import workspace  # noqa: E402
+from workspace import layout, variants  # noqa: E402
+
 CN_NUM = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
           "六": 6, "七": 7, "八": 8, "九": 9}
 EP_HEAD = re.compile(r"^#{1,4}\s*第\s*([0-9一二两三四五六七八九十百零]+)\s*集", re.M)
@@ -481,11 +485,16 @@ def _decls(impl_text):
     return out
 
 
-def presence_model(extract, sheet, impl_eps):
+def cast_file(args):
+    """选角表属于变体（同一部原剧裂变出的每部新剧各有一份）；没给 --cast 时沿用老位置 extract/cast.json。"""
+    return getattr(args, "cast", None) or os.path.join(args.extract, "cast.json")
+
+
+def presence_model(extract, sheet, impl_eps, cpath=None):
     """每集的新剧名册（原剧在场的人照选角表换名）和离场时间线（原剧离场 + 实现表声明）。"""
     mpath = os.path.join(extract, "manifest.json")
     manifest = load_sheet(mpath) if os.path.exists(mpath) else {"episodes": {}}
-    cpath = os.path.join(extract, "cast.json")
+    cpath = cpath or os.path.join(extract, "cast.json")
     cast = load_sheet(cpath) if os.path.exists(cpath) else {}
     sheet_eps = {e["ep"]: e for e in sheet.get("episodes", [])}
 
@@ -578,7 +587,7 @@ def cmd_presence(args):
                 with open(p, encoding="utf-8") as f:
                     for n, body in split_episodes(f.read()).items():
                         impl[n] = impl.get(n, "") + "\n" + body
-    roster, events = presence_model(args.extract, sheet, impl)
+    roster, events = presence_model(args.extract, sheet, impl, cast_file(args))
     problems = []
     for n in sorted(draft):
         scene_problems, here = scan_scenes(draft[n])
@@ -944,7 +953,7 @@ def cmd_scaffold(args):
 def cmd_cast(args):
     """列出原剧这一段所有说话人，生成 原名→新剧名 的选角表骨架；brief 用它把台词结构图换成新剧人名。"""
     manifest = load_sheet(os.path.join(args.extract, "manifest.json"))
-    path = os.path.join(args.extract, "cast.json")
+    path = cast_file(args)
     cast = load_sheet(path) if os.path.exists(path) else {}
     for n in parse_range(args.range):
         for sp in manifest["episodes"].get(str(n), {}).get("speakers", []):
@@ -965,7 +974,7 @@ def cmd_brief(args):
     """为一批生成写手任务单 + 正文骨架：每拍的原剧轮次换成新剧人名排好，钩子和体量写死。写手照着填，不用自己找。"""
     manifest = load_sheet(os.path.join(args.extract, "manifest.json"))
     sheet = load_sheet(args.sheet)
-    cast = load_sheet(os.path.join(args.extract, "cast.json"))
+    cast = load_sheet(cast_file(args))
     eps = {e["ep"]: e for e in sheet.get("episodes", [])}
     rng = parse_range(args.range)
     fp = sorted(fingerprint_terms(sheet, manifest))
@@ -983,7 +992,7 @@ def cmd_brief(args):
         with open(p, encoding="utf-8") as f:
             for k, body in split_episodes(f.read()).items():
                 prior[k] = prior.get(k, "") + "\n" + body
-    roster, events = presence_model(args.extract, sheet, prior)
+    roster, events = presence_model(args.extract, sheet, prior, cast_file(args))
     last_ep = max(int(k) for k in manifest["episodes"])
     os.makedirs(args.out, exist_ok=True)
     files, skipped = [], []
@@ -1019,6 +1028,7 @@ def cmd_brief(args):
                   f"实现表 `{os.path.join(args.out, f'impl-{n:03d}.md')}`（补新剧钩子和出口状态）。",
                   f"- **写完跑**：`python3 {os.path.abspath(__file__)} check {os.path.join(args.out, f'draft-{n:03d}.md')} "
                   f"--extract {args.extract} --sheet {args.sheet} --impl {os.path.join(args.out, f'impl-{n:03d}.md')}"
+                  + (f" --cast {args.cast}" if getattr(args, "cast", None) else "")
                   + (f" --min-total {args.min_total}" if args.min_total else "") + (f" --sec {args.sec}" if args.sec else "") + "`", "",
                   "| 拍 | 功能 | 轮次 | 说话顺序（新剧人名） | 作用 / 手法 |", "|---|---|---|---|---|"]
         skel = [f"# 第{cn_num(n)}集\n"]
@@ -1180,7 +1190,7 @@ def cmd_check(args):
     out += [f"第 {x['line']} 行写了外貌「{x['term']}」，删掉（形象以资产为准）：{x['text']}" for x in r.get("appearance", [])]
     out += [f"第 {x['line']} 行不是标准剧本行：{x['text']}" for x in r.get("format", [])]
     out += [f"龙套「{x['name']}」（第 {x['line']} 行）换成全季唯一的固定称呼" for x in r.get("genericNames", [])]
-    _, pr = _run(cmd_presence, draft=args.draft, extract=ex, sheet=sh, impl=args.impl)
+    _, pr = _run(cmd_presence, draft=args.draft, extract=ex, sheet=sh, impl=args.impl, cast=getattr(args, "cast", None))
     out += pr.get("problems", [])
     _, fpr = _run(cmd_fingerprint, sheet=sh, draft=args.draft, ignore=None,
                   manifest=os.path.join(ex, "manifest.json"))
@@ -1209,14 +1219,15 @@ def cmd_check(args):
 
 
 def cmd_next(args):
-    """看项目目录里已经有什么，只告诉下一步做哪一件事、跑哪条命令。每一步先跑它，不用记整份流程。"""
-    P = args.project
-    ex = os.path.join(P, "extract")
+    """看项目目录里已经有什么，只告诉下一步做哪一件事、跑哪条命令。每一步先跑它，不用记整份流程。
+    --project 可以是原剧工作区（提取、热播榜、出外壳、选剧名、立项），也可以是变体目录（写这一部新剧）。"""
+    L = layout(args.project)
+    P, ex = L["P"], L["ex"]
     me = os.path.abspath(__file__)
 
     def say(step, todo, cmd=None, model=None, why=None, session=None):
         # 写明谁来做：轻模型见到不带主语的「填空」「生成骨架」，会当成用户的活交回去
-        ask = step.startswith(("2 外壳", "4 样集", "5 交付"))
+        ask = step.startswith(("2 外壳", "2 剧名", "4 样集", "5 交付"))
         r = {"step": step, "who": WHO_USER if ask else WHO_AGENT, "todo": todo, "cmd": cmd}
         if model:
             r["model"] = TIER_TEXT[model] + (f"（{'、'.join(why)}）" if why else "")
@@ -1225,9 +1236,14 @@ def cmd_next(args):
         print(json.dumps(r, ensure_ascii=False, indent=1))
         return 0
     mpath = os.path.join(ex, "manifest.json")
+    if L["mode"] == "legacy" and not os.path.exists(mpath):
+        return say("1 准备", "还没有原剧工作区。先跑 init：同一部原剧已经有工作区就复用（不重拉模板），没有就新建。"
+                   "<根目录> 放所有原剧工作区，<原剧名> 填模板的剧名。",
+                   f"python3 {me} init --root <根目录> --source-title <原剧名> [--template-id <模板id> --library personal]")
     if not os.path.exists(mpath):
-        return say("1 提取", "原剧还没落盘。把拉片模板（整份文件或逐集 JSON 目录）交给 source。",
-                   f"python3 {me} source <模板文件或目录> --out {ex}")
+        raw = os.path.join(ex, "raw")
+        return say("1 提取", "原剧还没落盘。先看 source/extract/raw/ 里已经拉了哪些窗口，只补缺的；拉齐后交给 source。",
+                   f"python3 {me} source {raw} --out {ex}")
     m = load_sheet(mpath)
     window = [n for n in parse_range(args.range) if n in m["present"]] if args.range else m["present"]
     nobeat = [n for n in window if not os.path.exists(os.path.join(ex, "beats", f"ep-{n:03d}.json"))]
@@ -1244,34 +1260,40 @@ def cmd_next(args):
         return say("1 提取", f"这些集的节拍骨架还没填完：{unfilled}。你自己一集一集来：读 extract/source/ep-NNN.txt，"
                    "在 extract/beats/ep-NNN.json 里填 function、craft、hook，按剧情调整 turns。填完一集接着填下一集，全部填完再跑 next。"
                    "这是你的活，不要让用户填。")
-    ba = os.path.join(P, "beats-all.json")
+    ba = L["ba"]
     stale = not os.path.exists(ba) or any(
         os.path.getmtime(os.path.join(ex, "beats", f"ep-{n:03d}.json")) > os.path.getmtime(ba) for n in window)
     if stale:
-        base = os.path.join(P, "beat-sheet.json")
+        base = L["base"]
         return say("1 提取", "合成节拍表（会顺带生成台词结构图），然后跑 sheet。" +
                    ("" if os.path.exists(base) else f"先建 {base}：只写 source、roles（功能位），episodes 留空。"),
-                   f"python3 {me} build {ex} {base} --out-beats {ba} --out-fp {os.path.join(P, 'fingerprints-all.json')} && "
+                   f"python3 {me} build {ex} {base} --out-beats {ba} --out-fp {L['fp']} && "
                    f"python3 {me} sheet {ba} --manifest {mpath}" + (f" --range {args.range}" if args.range else ""))
     _, sh = _run(cmd_sheet, sheet=ba, manifest=mpath, min_beats=4, range=args.range)
     if not sh.get("passed"):
         return say("1 提取", "节拍表没过，按下面逐条改 beats/ep-NNN.json，改完重新 build。不许改 gaps 凑通过。",
                    {"problems": sh.get("problems")})
-    if not os.path.exists(os.path.join(P, "bible.md")) and not market_ready(P):
+    if L["mode"] != "variant" and not os.path.exists(os.path.join(P, "bible.md")) and not market_ready(L["market"]):
         hr = os.path.join(os.path.dirname(me), "hot_rank.py")
         return say("2 选题灵感", "出外壳之前，先抓红果热播榜看现在什么题材、设定、标题句式在热。跑下面的命令，读它生成的 market/hot-YYYYMMDD.md。"
-                   "脚本联不了网就照它的提示处理，不要凭记忆编榜单。",
-                   f"python3 {hr} --out {os.path.join(P, 'market')}")
+                   "一周内抓过的所有变体共用，不用重抓。脚本联不了网就照它的提示处理，不要凭记忆编榜单。",
+                   f"python3 {hr} --out {L['market']}")
+    if L["mode"] == "workspace":
+        return workspace_step(L, say, me)
     for f, step, todo in (("bible.md", "2 外壳", "你先读 market/ 里最新的热播榜摘要，再自己出 3 个外壳候选（只写概念，做金手指能力对位，"
                            "每个候选写一行「榜单依据」），然后停下来给用户选。用户选定后你写 bible.md。"),
                           ("season-map.md", "3 地图", "写全季实现地图 season-map.md。")):
         if not os.path.exists(os.path.join(P, f)):
+            if L["mode"] == "variant" and f == "bible.md":
+                step, todo = "3 圣经", (f"这是变体目录，外壳和剧名已经定了（见 variant.json）。写这部新剧的 bible.md：人物小节（含「说话」和「示例台词」）、"
+                                       "一节「## 人物小传」（交付时原样放在剧本开头，不写外形）、关系、金手指规则、地点、钱账、龙套名册。")
             return say(step, todo)
-    cpath = os.path.join(ex, "cast.json")
+    cpath = L["cast"]
     cast = load_sheet(cpath) if os.path.exists(cpath) else {}
     need = {sp for n in window for sp in m["episodes"][str(n)]["speakers"]}
     if not cast or any(not cast.get(sp) for sp in need):
-        return say("3 地图", "填选角表：原剧每个说话人对应新剧谁。", f"python3 {me} cast {window[0]}-{window[-1]} --extract {ex}")
+        return say("3 地图", "填选角表：原剧每个说话人对应新剧谁。",
+                   f"python3 {me} cast {window[0]}-{window[-1]} --extract {ex}" + (f" --cast {cpath}" if L["mode"] == "variant" else ""))
     mute = voiceless_leads(P, m, window, cast)
     if mute:
         return say("3 地图", f"bible.md 里这些主要人物还没有示例台词：{'、'.join(mute)}。在每人的小节里补「说话：」一行"
@@ -1294,9 +1316,10 @@ def cmd_next(args):
                      if i > 1 and (n - window[0]) % VOLUME == 0 else None)
             return say("4 正文", f"生成第 {n} 集的任务包，读一次 out/brief-{n:03d}.md 就开写，这一轮只写这一集，写完跑包里的 check 命令。",
                        f"python3 {me} brief {n} --extract {ex} --sheet {ba} --out {out}"
+                       + (f" --cast {cpath}" if L["mode"] == "variant" else "")
                        + (f" --min-total {args.min_total}" if args.min_total else "")
                        + (f" --sec {args.sec}" if args.sec else ""), model=tier, why=why, session=fresh)
-        code, res = _run(cmd_check, draft=draft, extract=ex, sheet=ba, impl=impl, min_total=args.min_total, sec=args.sec)
+        code, res = _run(cmd_check, draft=draft, extract=ex, sheet=ba, impl=impl, min_total=args.min_total, sec=args.sec, cast=cpath)
         if code:
             # 每个写过台词、没过的版本记一次（空骨架不算）；同一集改了两版还没过，升主力模型
             with open(draft, "rb") as f:
@@ -1311,18 +1334,46 @@ def cmd_next(args):
             tier, why = model_tier(n, load_sheet(ba), sheet_eps, last_ep, len(seen))
             return say("4 正文", f"第 {n} 集还有要改的地方（没写的拍、用「略」顶替的也在里面），改完再跑 next。",
                        {"draft": draft, "fix": res.get("fix")}, model=tier, why=why)
+    if L["mode"] == "variant":
+        return say("5 交付", "全部集检查通过。跑 deliver：合并全季稿、按规范命名、出原剧对照表和交付说明、和同一部原剧的其他变体查重，"
+                   "版本号自动加一。然后把 delivery/ 里这一版的文件交给用户。",
+                   f"python3 {me} deliver --project {P}" + (f" --min-total {args.min_total}" if args.min_total else ""))
     return say("5 交付", "全部集检查通过。合并成一份全季稿，出对照表给用户审，再出 Word。",
                f"python3 {me} gate <合并稿> --extract {ex} --sheet {ba} --pair-out 对照.md")
+
+
+def workspace_step(L, say, me):
+    """原剧工作区里，提取和热播榜之后的三步：出外壳候选 → 用户选外壳、选剧名 → 立项成变体目录。"""
+    W = L["W"]
+    vs = variants(W)
+    prior = "；".join(f"{v['id']}《{v['title']}》{v.get('axes') or v.get('shell', '')}" for v in vs)
+    newest = max((os.path.getmtime(os.path.join(W, v["dir"], "variant.json")) for v in vs
+                  if os.path.exists(os.path.join(W, v["dir"], "variant.json"))), default=0)
+    sh = L["shells"]
+    if not os.path.exists(sh) or os.path.getmtime(sh) <= newest:
+        return say("2 外壳", f"你先读 market/ 里最新的热播榜摘要，再自己出 3 个外壳候选，写进 {sh}"
+                   f"（追加一节「## 第{len(vs) + 1}轮」，格式见 references/fission.md，每个候选写「榜单依据」），然后停下来给用户选。"
+                   + (f"这部原剧已经裂变过：{prior}。新候选和每一个已有变体之间，外壳四轴至少三轴不同。" if vs else ""))
+    text = open(sh, encoding="utf-8").read()
+    head = f"## 第{len(vs) + 1}轮"
+    if head not in text:
+        return say("2 外壳", f"{sh} 里没有「{head}」这一节。这一轮的 3 个候选写在这个标题下面（前面几轮的别动），再停下来给用户选。")
+    if not re.search(r"^选定[:：]", text.split(head)[-1], re.M):
+        return say("2 外壳", f"候选已经写在 {sh}，等用户选。用户选定后，在这一轮末尾写一行「选定：候选X」，再跑 next。")
+    return say("2 剧名", "外壳选定了。给这个外壳起 5 个剧名（规范见 references/naming.md：4-16 个汉字、卖点或反差放前面、"
+               "不和原剧、热播榜、已有变体撞名，不带原剧专名），先跑下面的 title-check，过了的拿给用户选。"
+               "用户选定后跑 variant 立项，之后所有命令都用 --project 指向新建的变体目录。",
+               f"python3 {me} title-check --workspace {W} <剧名1> <剧名2> <剧名3> <剧名4> <剧名5>  ；用户选定后  "
+               f"python3 {me} variant --workspace {W} --title <用户选的剧名> --shell <候选X> --axes '<地域行业·主角身份·底牌形式·关系载体>'")
 
 
 MARKET_TTL_DAYS = 7  # 榜单一周内的算新；抓不到写过 unavailable.txt 的，当天不再催
 
 
-def market_ready(P):
-    """出外壳前要有一份一周内的热播榜摘要，或者一份当天的「抓不到」说明。"""
+def market_ready(d):
+    """出外壳前 market 目录里要有一份一周内的热播榜摘要，或者一份当天的「抓不到」说明。"""
     import glob
     import time
-    d = os.path.join(P, "market")
     now = time.time()
     if any(now - os.path.getmtime(p) < MARKET_TTL_DAYS * 86400 for p in glob.glob(os.path.join(d, "hot-*.md"))):
         return True
@@ -1337,8 +1388,8 @@ VOLUME = 10  # 正文每 10 集一卷，卷首提示开新会话：上下文越�
 
 def cmd_progress(args):
     """给主线程看的一页进度：每集一行，写没写、过没过、字数多少、该用哪档模型。主线程汇报只用它，不读正文和长 JSON。"""
-    P = args.project
-    ex, out, ba = os.path.join(P, "extract"), os.path.join(P, "out"), os.path.join(P, "beats-all.json")
+    L = layout(args.project)
+    ex, out, ba = L["ex"], L["out"], L["ba"]
     m = load_sheet(os.path.join(ex, "manifest.json"))
     sheet = load_sheet(ba)
     sheet_eps = {e["ep"]: e for e in sheet.get("episodes", [])}
@@ -1353,7 +1404,7 @@ def cmd_progress(args):
         if not os.path.exists(draft):
             todo.append(n)
             continue
-        code, res = _run(cmd_check, draft=draft, extract=ex, sheet=ba, impl=impl, min_total=args.min_total, sec=args.sec)
+        code, res = _run(cmd_check, draft=draft, extract=ex, sheet=ba, impl=impl, min_total=args.min_total, sec=args.sec, cast=L["cast"])
         with open(draft, encoding="utf-8") as f:
             st = episode_stats(n, split_episodes(f.read()).get(n, ""))
         verdict = "过" if not code else f"没过 {res.get('count', 0)} 条"
@@ -1380,6 +1431,137 @@ def episode_files(out, n):
                 return p, p.replace("draft-", "impl-")
     return one, os.path.join(out, f"impl-{n:03d}.md")
 
+BIO_HEAD = re.compile(r"^(#{1,3})\s*人物小传\s*$", re.M)
+
+
+def bible_bios(bible):
+    """bible.md 里「## 人物小传」这一节（到下一个同级或更高级标题为止），交付时原样放在剧本开头。"""
+    m = BIO_HEAD.search(bible)
+    if not m:
+        return None
+    level = len(m.group(1))
+    nxt = re.search(rf"^#{{1,{level}}}\s", bible[m.end():], re.M)
+    return bible[m.end(): m.end() + nxt.start() if nxt else len(bible)].strip()
+
+
+def cmd_deliver(args):
+    """变体交付：全部集过 check 才合并；按 references/naming.md 命名，版本号自动加一；出原剧对照表、交付说明，
+    和同一部原剧的其他变体查重、查撞名。"""
+    import datetime
+    import glob
+    import subprocess
+    L = layout(args.project)
+    if L["mode"] != "variant":
+        print(json.dumps({"error": "deliver 只在变体目录里用（有 variant.json）。老的单项目目录照 SKILL.md 第 5 步手动出"}, ensure_ascii=False))
+        return 1
+    P, ex, ba, out, dv = L["P"], L["ex"], L["ba"], L["out"], L["delivery"]
+    meta = load_sheet(os.path.join(P, "variant.json"))
+    t = meta["title"]
+    m = load_sheet(os.path.join(ex, "manifest.json"))
+    window = [n for n in parse_range(args.range) if n in m["present"]] if args.range else m["present"]
+    bad = []
+    for n in window:
+        draft, impl = episode_files(out, n)
+        if not os.path.exists(draft):
+            bad.append(f"第{n}集还没写")
+            continue
+        code, res = _run(cmd_check, draft=draft, extract=ex, sheet=ba, impl=impl, min_total=args.min_total, sec=None, cast=L["cast"])
+        if code:
+            bad.append(f"第{n}集 check 没过（{res.get('count', 0)} 条）")
+    if bad:
+        print(json.dumps({"error": "还有集没过，不能交付", "problems": bad[:30]}, ensure_ascii=False, indent=1))
+        return 2
+    bible = open(os.path.join(P, "bible.md"), encoding="utf-8").read() if os.path.exists(os.path.join(P, "bible.md")) else ""
+    bios = bible_bios(bible)
+    if not bios:
+        print(json.dumps({"error": "bible.md 里没有「## 人物小传」一节。补上（每人一段：身份、性格、说话特点、和主角的关系，不写外形），"
+                                   "交付时它原样放在剧本开头"}, ensure_ascii=False))
+        return 2
+    os.makedirs(dv, exist_ok=True)
+    vers = [int(x) for p in glob.glob(os.path.join(dv, f"《{t}》剧本_v*_*.md")) for x in re.findall(r"_v(\d+)_", p)]
+    v = max(vers, default=0) + 1
+    day = datetime.date.today().strftime("%Y%m%d")
+    name = lambda kind, ext="md": os.path.join(dv, f"《{t}》{kind}_v{v}" + (f"_{day}" if kind == "剧本" else "") + f".{ext}")
+    body, impls, done = [], [], set()
+    for n in window:
+        draft, impl = episode_files(out, n)
+        if draft in done:  # 老的批次文件一份里有好几集，只合一次
+            continue
+        done.add(draft)
+        body.append(COMMENT.sub("", open(draft, encoding="utf-8").read()).strip())
+        if os.path.exists(impl):
+            impls.append(open(impl, encoding="utf-8").read().strip())
+    merged = f"# 《{t}》\n\n## 人物小传\n\n{bios}\n\n## 正文\n\n" + "\n\n".join(body) + "\n"
+    last = sorted(glob.glob(os.path.join(dv, f"《{t}》剧本_v{v - 1}_*.md")))
+    if last and open(last[-1], encoding="utf-8").read() == merged:  # 稿子没改就不出新版本，免得一堆内容一样的 v2、v3
+        print(json.dumps({"unchanged": f"v{v - 1}", "file": os.path.basename(last[-1]),
+                          "todo": "稿子和上一版一模一样，没出新版本。改过稿再交付"}, ensure_ascii=False))
+        return 0
+    script = name("剧本")
+    with open(script, "w", encoding="utf-8") as f:
+        f.write(merged)
+    impl_all = os.path.join(out, "impl-merged.md")
+    with open(impl_all, "w", encoding="utf-8") as f:
+        f.write("\n\n".join(impls) + "\n")
+    pair = name("原剧对照表")
+    _, g = _run(cmd_gate, draft=script, extract=ex, sheet=ba, impl=impl_all, pair_out=pair,
+                min_line_ratio=0.7, min_speech_ratio=0.6, max_speech_ratio=1.3)
+    _, vo = _run(cmd_voice, draft=script, min_total=args.min_total, min_speech=None, max_speech=None, max_tics=None, max_run=None)
+    # 同一部原剧的其他变体：剧本最像的地方和撞名
+    others, corpus_parts, my_cast = [], [], set(load_sheet(L["cast"]).values()) if os.path.exists(L["cast"]) else set()
+    clash = {}
+    for ov in variants(L["W"]):
+        od = os.path.join(L["W"], ov["dir"])
+        if os.path.abspath(od) == P:
+            continue
+        latest = sorted(glob.glob(os.path.join(od, "delivery", "*剧本_v*.md")))
+        src = latest[-1:] or sorted(glob.glob(os.path.join(od, "out", "draft-*.md")))
+        if src:
+            others.append(ov["id"])
+            corpus_parts += [open(p, encoding="utf-8").read() for p in src]
+        oc = os.path.join(od, "cast.json")
+        if os.path.exists(oc):
+            for nm in (set(load_sheet(oc).values()) & my_cast) - {""}:
+                if len(nm) >= 2 and nm not in GENERIC_ROLES:
+                    clash.setdefault(nm, []).append(ov["id"])
+    dup_hits = []
+    if corpus_parts:
+        corpus = os.path.join(out, "other-variants.txt")
+        with open(corpus, "w", encoding="utf-8") as f:
+            f.write("\n".join(corpus_parts))
+        _, d = _run(cmd_dup, draft=script, source=corpus, k=8)
+        dup_hits = d.get("hits", [])
+    docx = name("剧本", "docx")
+    r = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "to_docx.py"), script, docx],
+                       capture_output=True, text=True)
+    docx_note = "已生成" if r.returncode == 0 and os.path.exists(docx) else f"没生成（{(r.stderr or r.stdout).strip()[-80:] or '缺 python-docx'}），装 requirements-docx.txt 后重跑 deliver"
+    sm = vo.get("summary", {})
+    short = [f"第{x['ep']}集" for x in vo.get("failed", [])]
+    review = sorted(glob.glob(os.path.join(dv, f"《{t}》审查报告_v{v}.md")))
+    prev = sorted(set(vers))
+    notes = [f"# 《{t}》交付说明 v{v}", "",
+             f"- 变体：{meta['id']}　外壳：{meta.get('axes') or meta.get('shell', '')}",
+             f"- 原剧：《{(workspace._load(os.path.join(L['src'], 'template.json'), {}) or {}).get('title', '?')}》　集数：{len(window)}　日期：{day}",
+             f"- 剧本：`{os.path.basename(script)}`；Word：{docx_note}",
+             f"- 全文字数：最少 {sm.get('totalHanMin')}、中位 {sm.get('totalHanMedian')}、最多 {sm.get('totalHanMax')}"
+             + (f"；低于 {args.min_total} 的：{'、'.join(short)}" if args.min_total and short else ""),
+             f"- 逐集 check：全部通过（{len(window)} 集）",
+             f"- 原剧对照：`{os.path.basename(pair)}`，gate {'通过' if g.get('passed') else '有问题：' + '；'.join(g.get('problems', [])[:5])}",
+             "- 和其他变体查重（连续 8 字）：" + ("没有其他变体" if not others else "对照 %s，重合 %d 处" % ("、".join(others), len(dup_hits))),
+             "- 和其他变体撞名：" + ("；".join("%s（%s）" % (k, "、".join(v)) for k, v in clash.items()) or "无"),
+             f"- 剧本审查：{'`' + os.path.basename(review[0]) + '`' if review else '还没跑 drama-review，审查报告存成《' + t + '》审查报告_v' + str(v) + '.md 放进 delivery/'}",
+             f"- 以前的版本：{'、'.join(f'v{x}' for x in prev) or '无（这是第一版）'}", ""]
+    if dup_hits:
+        notes += ["## 和其他变体重合最多的地方", ""] + [f"- 第 {h['line']} 行：{h['ngram']}" for h in dup_hits[:10]] + [""]
+    with open(name("交付说明"), "w", encoding="utf-8") as f:
+        f.write("\n".join(notes))
+    workspace.set_status(P, f"已交付 v{v}")
+    print(json.dumps({"version": v, "files": [os.path.basename(p) for p in (script, docx, pair, name("交付说明")) if os.path.exists(p)],
+                      "dir": dv, "crossVariantDup": len(dup_hits), "nameClash": clash,
+                      "todo": "把 delivery/ 里这一版的文件交给用户，汇报时贴交付说明里的数，不要转述成“全部达标”"}, ensure_ascii=False, indent=1))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="DramaClone 检查工具")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1389,6 +1571,23 @@ def main():
     p.add_argument("--batch", type=int, help="已停用：正文一次只发一集。留着只为旧命令不报错")
     p.add_argument("--min-total", type=int, help="每集全文字数下限（和用户定的）")
     p.add_argument("--sec", type=int, help="单集时长上限（秒），用户明确要求压缩时才给")
+    p = sub.add_parser("init", help="建原剧工作区，或找到已有的（同一部原剧只拉一次模板）")
+    p.add_argument("--root", required=True, help="放所有原剧工作区的根目录")
+    p.add_argument("--source-title", required=True, help="原剧名（模板的剧名）")
+    p.add_argument("--template-id")
+    p.add_argument("--library", help="personal / official")
+    p = sub.add_parser("title-check", help="核对新剧名合不合规范（references/naming.md）")
+    p.add_argument("--workspace", required=True)
+    p.add_argument("titles", nargs="+")
+    p = sub.add_parser("variant", help="用户选定外壳和剧名后立项：建 V<编号>-<剧名>/ 变体目录")
+    p.add_argument("--workspace", required=True)
+    p.add_argument("--title", required=True)
+    p.add_argument("--shell", required=True, help="选定的候选，如 候选B")
+    p.add_argument("--axes", help="外壳四轴一句话：地域行业·主角身份·底牌形式·关系载体")
+    p = sub.add_parser("deliver", help="变体交付：合并全季、规范命名、版本号加一、对照表、交付说明、跨变体查重")
+    p.add_argument("--project", required=True, help="变体目录")
+    p.add_argument("--range")
+    p.add_argument("--min-total", type=int)
     p = sub.add_parser("progress", help="一页进度表：每集过没过、全文/口播字数、模型档，主线程汇报用")
     p.add_argument("--project", default=".")
     p.add_argument("--range")
@@ -1401,6 +1600,7 @@ def main():
     p = sub.add_parser("cast", help="生成/补全 原剧说话人→新剧人名 的选角表")
     p.add_argument("range")
     p.add_argument("--extract", required=True)
+    p.add_argument("--cast", help="选角表路径；变体目录里是 <变体>/cast.json，不给就用 extract/cast.json")
     p = sub.add_parser("brief", help="逐集生成写手任务单 + 正文骨架 + 实现表骨架（一集一套文件）")
     p.add_argument("range")
     p.add_argument("--extract", required=True)
@@ -1408,6 +1608,7 @@ def main():
     p.add_argument("--out", required=True)
     p.add_argument("--force", action="store_true", help="覆盖已有的正文/实现表骨架（任务单总是重写）")
     p.add_argument("--min-total", type=int, help="每集全文字数下限，写进任务包里的 check 命令")
+    p.add_argument("--cast", help="选角表路径（变体目录的 cast.json）")
     p.add_argument("--sec", type=int, help="单集时长上限（秒）。不给就照原剧每集时长；用户或制作方明确要压时才给")
     p = sub.add_parser("check", help="写完一集马上跑：五项检查合一，只列要改的地方")
     p.add_argument("draft")
@@ -1416,10 +1617,12 @@ def main():
     p.add_argument("--impl")
     p.add_argument("--min-total", type=int)
     p.add_argument("--sec", type=int, help="单集时长上限（秒）；不给就只和原剧比（不超过原剧口播的 1.3 倍）")
+    p.add_argument("--cast", help="选角表路径（变体目录的 cast.json）")
     p = sub.add_parser("presence", help="出场逻辑：场内在场一致、每集出场对原剧名册、离场后回来要交代")
     p.add_argument("draft")
     p.add_argument("--extract", required=True)
     p.add_argument("--sheet", required=True)
+    p.add_argument("--cast", help="选角表路径（变体目录的 cast.json）")
     p.add_argument("--impl", help="实现表；同目录的 impl-*.md 会一起读，用来认「加人/离场/回归」声明")
     p = sub.add_parser("source", help="把拉片模板落成逐集原文 + manifest + 查重语料")
     p.add_argument("input", help="整份模板 JSON，或逐集 evidence JSON 所在目录")
@@ -1474,7 +1677,8 @@ def main():
                 "rules": cmd_rules, "dup": cmd_dup, "build": cmd_build,
                 "source": cmd_source, "gate": cmd_gate, "next": cmd_next, "scaffold": cmd_scaffold,
                 "cast": cmd_cast, "brief": cmd_brief, "check": cmd_check, "presence": cmd_presence,
-                "progress": cmd_progress}[args.cmd](args)
+                "progress": cmd_progress, "init": workspace.cmd_init, "title-check": workspace.cmd_title_check,
+                "variant": workspace.cmd_variant, "deliver": cmd_deliver}[args.cmd](args)
     except (OSError, ValueError, KeyError) as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
         return 1
