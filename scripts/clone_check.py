@@ -277,9 +277,151 @@ STOCK_REACTIONS = {
     "后退": "后退一步|连连后退|退了一步|往后退", "苦笑": "苦笑", "瞪眼": "瞪大|瞪圆", "瘫坐": "瘫坐|瘫软|瘫在",
     "红眼眶": "眼眶一红|眼眶泛红|红了眼眶|眼圈一红", "深吸气": "深吸一口气|深吸了口气", "沉默": "沉默片刻|沉默了几秒|沉默半晌",
     "身子一僵": "身子一僵|浑身一僵|僵在原地|浑身一震", "顿了顿": "顿了顿",
+    # 填空的道具小动作：两句台词之间没事发生，轻模型就挪杯子。实测一部 flash 写的 63 集，「把X往Y推/挪」482 处
+    "挪道具": "半寸|一寸|半尺|(?:推|挪|蹭|收)了(?:推|挪|蹭|收)|又(?:搁|放|盖)(?:下|回)|掀开又盖|拿起来又放下",
 }
 STOCK_RE = {k: re.compile(v) for k, v in STOCK_REACTIONS.items()}
 STOCK_GAP = 10
+
+# 原剧这句话的口气：问、叹、语气词、没说完、改口。实测 flash 稿问句只有原剧的一半不到（10% 对 23%），
+# 语气词只有五分之一（7% 对 35%）：不告诉它原剧这句是怎么说的，它就句句写成句号收尾的陈述句
+PARTICLE = re.compile(r"[呃啊嗯哎呀吧呢嘛哈喂哟切哼呗啦咯噢哦]")
+TRAIL = re.compile(r"(……|…|——|—|-)\s*[。！？]?$")
+SELF_FIX = re.compile(r"哦不|啊不|不对|，呃，|，啊，")
+ONE_TURN = "<!-- 一轮一行 -->"  # 1.10 起的骨架带它：一轮话写一行，交付时脚本按标点拆；没有它的老稿子照老规矩查
+
+
+def tone_marks(line, cut=False):
+    marks = []
+    if re.search(r"[？?]", line):
+        marks.append("问")
+    if "！" in line or "!" in line:
+        marks.append("叹")
+    if PARTICLE.search(line):
+        marks.append("语气词")
+    if SELF_FIX.search(line):
+        marks.append("改口")
+    if TRAIL.search(line.strip()):
+        marks.append("被打断" if cut else "没说完")
+    return marks
+
+
+def tone_profile(turns):
+    """原剧这集的口气：几成是问句、几成带语气词、几句没说完或被打断。写进任务包当本集的口气目标。"""
+    n = len(turns) or 1
+    return {"turns": len(turns), "question": sum(1 for t in turns if re.search(r"[？?]", t["line"])) / n,
+            "particle": sum(1 for t in turns if PARTICLE.search(t["line"])) / n,
+            "trail": sum(1 for t in turns if TRAIL.search(t["line"].strip()))}
+
+
+def split_clauses(text):
+    """按标点切小句，标点留在前一句末尾。"""
+    return [c for c in re.findall(r"[^，。！？；、,.!?;…—]+[，。！？；、,.!?;…—]*", text) if c.strip()]
+
+
+def split_speech_lines(text, max_han=20):
+    """交付时把一轮长台词按标点拆成同一人连着的几行，每行不超过 max_han 个汉字。写手只管把话说顺，不用自己拆。
+    一小句本身就超长（中间没标点）的不拆，rules 会报。"""
+    out = []
+    for l in text.splitlines():
+        m = SPEECH.match(l)
+        if not m or len(HAN.findall(m.group(3))) <= max_han:
+            out.append(l)
+            continue
+        chunks, cur = [], ""
+        for c in split_clauses(m.group(3)):
+            if cur and len(HAN.findall(cur + c)) > max_han:
+                chunks.append(cur)
+                cur = c
+            else:
+                cur += c
+        chunks.append(cur)
+        if any(len(HAN.findall(c)) > max_han for c in chunks):
+            out.append(l)
+            continue
+        out.append(f"{m.group(1)}{m.group(2) or ''}：{chunks[0].strip()}")
+        out += [f"{m.group(1)}：{c.strip()}" for c in chunks[1:]]
+    return "\n".join(out)
+
+
+def load_shapes(*dirs):
+    """口语形状库：技能自带的 library/oral-shapes.json，加上原剧工作区里专用的（有的话）。"""
+    shapes = []
+    for d in (os.path.join(SKILL_DIR, "library"), *dirs):
+        p = os.path.join(d, "oral-shapes.json")
+        if os.path.exists(p):
+            shapes += load_sheet(p).get("shapes", [])
+    return shapes
+
+
+def pick_shapes(shapes, text, k=4):
+    """和这一集节拍、原剧语气对得上的形状，命中的 tag 越多越先选，同一场景类型只选一条。"""
+    scored = sorted(((sum(text.count(t) for t in s.get("tags", [])), i) for i, s in enumerate(shapes)), key=lambda x: (-x[0], x[1]))
+    got, scenes = [], set()
+    for c, i in scored:
+        s = shapes[i]
+        if c and s.get("scene") not in scenes:
+            got.append(s)
+            scenes.add(s.get("scene"))
+        if len(got) >= k:
+            break
+    return got
+
+
+def cmd_library(args):
+    """校验口语形状库的格式。"""
+    shapes = load_shapes(*([args.workspace] if args.workspace else []))
+    problems, ids = [], set()
+    for s in shapes:
+        sid = s.get("id")
+        if not sid or sid in ids:
+            problems.append(f"id 空或重复：{sid}")
+        ids.add(sid)
+        for k in ("scene", "technique", "note"):
+            if not s.get(k):
+                problems.append(f"{sid}：缺 {k}")
+        if not s.get("tags"):
+            problems.append(f"{sid}：缺 tags")
+        ex = s.get("example") or []
+        if not 2 <= len(ex) <= 5 or any(len(x) != 2 for x in ex):
+            problems.append(f"{sid}：example 要 2-5 轮，每轮 [说话人, 台词]")
+        for who, line in (x for x in ex if len(x) == 2):
+            if len(HAN.findall(line)) > 20:
+                problems.append(f"{sid}：例句超过 20 字：{line}")
+            if any(t in line for t in AI_TICS_ANY):
+                problems.append(f"{sid}：例句有 AI 腔：{line}")
+    from collections import Counter
+    print(json.dumps({"shapes": len(shapes), "scenes": dict(Counter(s.get("scene") for s in shapes)),
+                      "problems": problems, "passed": not problems}, ensure_ascii=False, indent=1))
+    return 0 if not problems else 2
+
+
+SUBTEXT = re.compile(r"^-\s*(E\d+-B\d+)\s*潜台词[ \t]*[:：][ \t]*(.*)$", re.M)
+REJECTED = "rejected.jsonl"  # 本项目被 check 拦下过的写法，任务包里当反例给下一集
+
+
+def record_rejected(out_dir, items):
+    """把这一次被拦下的句子记下来（同一句只记一次）。"""
+    path = os.path.join(out_dir, REJECTED)
+    seen = {json.loads(l)["text"] for l in _read(path).splitlines() if l.strip()}
+    new = [x for x in items if x["text"] not in seen]
+    if new:
+        with open(path, "a", encoding="utf-8") as f:
+            for x in new:
+                f.write(json.dumps(x, ensure_ascii=False) + "\n")
+
+
+def counter_examples(P, out_dir, cap=12):
+    """反例：用户圈出来的（变体目录 反例.md）在前，check 拦下过的按类型各取最近几条。"""
+    user = [l.strip()[1:].strip() for l in _read(os.path.join(P, "反例.md")).splitlines() if l.strip().startswith(("-", "*"))]
+    rows = [json.loads(l) for l in _read(os.path.join(out_dir, REJECTED)).splitlines() if l.strip()]
+    by = {}
+    for r in reversed(rows):
+        by.setdefault(r["kind"], [])
+        if len(by[r["kind"]]) < 3:
+            by[r["kind"]].append(r)
+    auto = [f"{r['text']}（{r['kind']}）" for v in by.values() for r in v]
+    return (user + auto)[:cap]
 
 
 def stock_uses(text):
@@ -314,7 +456,7 @@ def placeholders(lines):
     return [(m.group(0).strip() or "……", l.strip()[:30]) for l in lines for m in [PLACEHOLDER.search(l)] if m]
 
 
-def episode_stats(n, text):
+def episode_stats(n, text, one_turn=False):
     lines = text.splitlines()
     speech = [m for m in (SPEECH.match(l) for l in lines) if m]
     speech_han = sum(len(HAN.findall(re.sub(r"（[^）]*）", "", m.group(3)))) for m in speech)
@@ -328,7 +470,8 @@ def episode_stats(n, text):
             run = run + 1 if m.group(1) == prev else 1
             prev = m.group(1)
             max_run = max(max_run, run)
-        elif l.strip():
+        elif l.strip() and not (one_turn and l.strip().startswith("△")):
+            # 一轮一行的稿子里，插一行 △ 不算对方接了话：不然模型为了躲这条，句句之间塞一个挪杯子的动作
             prev, run = None, 0
     tics = [(t, l.strip()[:30]) for l in lines if l.startswith("△") for t in AI_TICS if t in l]
     tics += [(t, l.strip()[:30]) for l in lines for t in AI_TICS_ANY
@@ -348,11 +491,12 @@ def episode_stats(n, text):
 
 def cmd_voice(args):
     with open(args.draft, encoding="utf-8") as f:
-        eps = split_episodes(f.read())
+        raw = f.read()
+    eps = split_episodes(raw)
     if not eps:
         print(json.dumps({"error": "没找到 `# 第N集` 标题，按集统计不了"}, ensure_ascii=False))
         return 1
-    rows = [episode_stats(n, eps[n]) for n in sorted(eps)]
+    rows = [episode_stats(n, eps[n], ONE_TURN in raw) for n in sorted(eps)]
     gated = any(v is not None for v in (args.min_total, args.min_speech, args.max_speech, args.max_tics, args.max_run))
     fails = []
     for r in rows:
@@ -366,7 +510,7 @@ def cmd_voice(args):
         if args.max_tics is not None and len(r["aiTics"]) > args.max_tics:
             why.append(f"AI 腔 {len(r['aiTics'])} 处")
         if args.max_run is not None and r["maxSameSpeakerRun"] > args.max_run:
-            why.append(f"同一人连说 {r['maxSameSpeakerRun']} 行，中间没有动作或接话")
+            why.append(f"同一人连说 {r['maxSameSpeakerRun']} 行，中间没人接话（上限 {args.max_run}）：让对方插一句、打断他，或者删掉几行")
         # 占位写法不看阈值，任何时候都算没写完
         why += [f"用「{t}」代替正文，把这段戏写出来：{l}" for t, l in r["placeholders"]]
         if why:
@@ -424,7 +568,10 @@ STD_LINE = re.compile(r"^(#{1,2} |场\d|人物[:：]|△|<!--|---$)")
 def cmd_rules(args):
     """客户制作规则：每场说话人数、单句汉字数；括注只在 --require-annotation 时判。"""
     with open(args.draft, encoding="utf-8") as f:
-        lines = [l if not COMMENT.match(l) else "" for l in f.read().splitlines()]
+        raw = f.read()
+    lines = [l if not COMMENT.match(l) else "" for l in raw.splitlines()]
+    # 一轮一行的稿子交付时按标点拆行，这里只看每个小句：两个标点之间超过上限的才拆不开
+    by_clause = getattr(args, "splittable", False) or ONE_TURN in raw
     scene, speakers, over, long_, nop = None, {}, [], [], []
     visual, look, fmt, generic = [], [], [], {}
     in_eps = False
@@ -451,9 +598,10 @@ def cmd_rules(args):
         speakers[scene].add(m.group(1))
         if GENERIC_SPEAKER.match(m.group(1).strip()):
             generic.setdefault(m.group(1).strip(), i)
-        han = len(re.findall(r"[\u4e00-\u9fff]", m.group(3)))
+        han = max((len(HAN.findall(c)) for c in split_clauses(m.group(3))), default=0) if by_clause \
+            else len(re.findall(r"[\u4e00-\u9fff]", m.group(3)))
         if han > args.max_han:
-            long_.append({"line": i, "speaker": m.group(1), "han": han})
+            long_.append({"line": i, "speaker": m.group(1), "han": han, "clause": by_clause})
         if not m.group(2):
             nop.append({"line": i, "text": l[:30]})
     over = [{"scene": k, "speakers": sorted(v)} for k, v in speakers.items() if len(v) > args.max_speakers]
@@ -997,6 +1145,7 @@ def cmd_brief(args):
     roster, events = presence_model(args.extract, sheet, prior, cast_file(args))
     last_ep = max(int(k) for k in manifest["episodes"])
     os.makedirs(args.out, exist_ok=True)
+    shapes = load_shapes(os.path.dirname(os.path.dirname(os.path.abspath(args.extract))))
     files, skipped = [], []
     for n in rng:
         src = manifest["episodes"].get(str(n))
@@ -1012,6 +1161,7 @@ def cmd_brief(args):
         if cap:
             s_lo, s_hi = min(s_lo, round(cap * 0.8)), min(s_hi, cap)
         tier, why = model_tier(n, sheet, eps, last_ep)
+        prof = tone_profile(turns)
         prev = EXIT_STATE.search(prior.get(n - 1, ""))
         brief = [f"# 写作任务单 第{n}集", "", *head,
                   f"- **模型**：{TIER_TEXT[tier]}" + (f"（{'、'.join(why)}）" if why else ""),
@@ -1019,7 +1169,15 @@ def cmd_brief(args):
                   f"- **体量**：台词 {lo}-{hi} 行，口播 {s_lo}-{s_hi} 字，时长照原剧（约 {src['durationSec']} 秒）。"
                   + (f"用户定了单集 {args.sec} 秒上限，原剧这集更长：在本集节拍内压缩，少一轮、句子更短，不删拍。"
                      if cap and src["speechHan"] > cap else ""),
-                  "- 每一轮括号里是原剧这句的字数，新句子照这个长度写，单句不超过 20 字。不写外貌、不写画面，龙套用唯一称呼。",
+                  "- **一轮话写成一行。** 每一轮括号里是原剧这句的语气、字数和口气：长短照原剧，用逗号句号断开，"
+                  "每个小句（两个标点之间）不超过 20 字。超过 20 字的整句，交付时脚本按标点拆成同一人连着的几行，你不用自己拆，"
+                  "中间也不要插 △ 隔开。标了「问」「叹」「语气词」「没说完」「被打断」「改口」的，新句子也这么说。",
+                  f"- **口气**：原剧这集 {prof['turns']} 句里，问句 {prof['question']:.0%}，带语气词（啊、吧、呢、呃……）{prof['particle']:.0%}，"
+                  f"没说完或被打断 {prof['trail']} 句。照这个比例写，不要句句都是句号收尾的陈述句。",
+                  "- **△ 只写有用的动作**：拿出证据、动手、进门、离开、东西换了手。两句台词之间没事发生就不写 △；"
+                  "「把杯子往前推了半寸」「壶盖掀开又盖回去」这种填空的小动作不写。不写外貌、不写画面，龙套用唯一称呼。",
+                  "- **先写潜台词，再写台词**：实现表每拍有一行「潜台词：」，先填这个人这一拍想要什么、什么话不能直说。"
+                  "台词只说一半，另一半让观众自己听出来；不让人物把剧情和前史直接说给对方听。",
                   f"- **原剧钩子**：{src['hookSrc']}",
                   f"- **上一集结尾状态**：{prev.group(1).strip() if prev else '（第一集）' if n == min(int(k) for k in manifest['episodes']) else f'（第{n - 1}集实现表还没写「出口状态」：先补上它，再写这一集）'}",
                   f"- **本集出场**（照原剧映射）：{'、'.join(sorted(roster.get(n, set()))) or '（选角表没填，先跑 cast 填好）'}",
@@ -1033,22 +1191,37 @@ def cmd_brief(args):
                   + (f" --cast {args.cast}" if getattr(args, "cast", None) else "")
                   + (f" --min-total {args.min_total}" if args.min_total else "") + (f" --sec {args.sec}" if args.sec else "") + "`", "",
                   "| 拍 | 功能 | 轮次 | 说话顺序（新剧人名） | 作用 / 手法 |", "|---|---|---|---|---|"]
-        skel = [f"# 第{cn_num(n)}集\n"]
+        skel = [f"# 第{cn_num(n)}集\n", ONE_TURN + "\n"]
         impl = [f"## 第{n}集", "对标节拍：" + ", ".join(b["id"] for b in j["beats"]),
-                f"原剧钩子：{src['hookSrc']}", "新剧钩子：", "- 出口状态：", ""]
+                f"原剧钩子：{src['hookSrc']}", "新剧钩子：", "- 出口状态：",
+                *[f"- {b['id']} 潜台词：" for b in j["beats"]], ""]
         for b in j["beats"]:
             t = b.get("turns")
             seg = turns[t[0] - 1:t[1]] if t else []
-            def turn(x):
+            lo_t = (t[0] - 1) if t else 0
+
+            def turn(x, i):
                 k = len(HAN.findall(x["line"]))
-                split = f"→拆{-(-k // 18)}行" if k > 20 else ""
-                return f"{cast.get(x['speaker']) or x['speaker']}（{x['state'].split('，')[0].split('、')[0]}，{k}字{split}）"
-            seq = " → ".join(turn(x) for x in seg) or "（无台词）"
+                nxt = turns[lo_t + i + 1] if lo_t + i + 1 < len(turns) else None
+                marks = tone_marks(x["line"], cut=bool(nxt and nxt["speaker"] != x["speaker"]))
+                return (f"{cast.get(x['speaker']) or x['speaker']}（{x['state'].split('，')[0].split('、')[0]}，{k}字"
+                        + "".join("·" + mk for mk in marks) + "）")
+            seq = " → ".join(turn(x, i) for i, x in enumerate(seg)) or "（无台词）"
             brief.append(f"| {b['id']} | {b['function']} | {len(seg)} | {seq} | {b.get('craft', '')} |")
             skel.append(f"<!-- {b['id']}｜{b['function']}｜{len(seg)} 轮：{seq} -->\n")
         skel.append(f"<!-- 钩子｜{j.get('hook', '')} -->\n")  # 用抽象钩子，原剧钩子带人名，留在任务单里
         # 一集一套文件：一次回复只写一集，长批次写到后面才不会缩水、写“略”
         paths = {k: os.path.join(args.out, f"{k}-{n:03d}.md") for k in ("brief", "draft", "impl")}
+        # 口语示例从库里挑，不现场去原剧抽：和这一集节拍、原剧语气对得上的几条
+        cue = " ".join(f"{b.get('function', '')} {b.get('craft', '')}" for b in j["beats"]) + " " + " ".join(x["state"] for x in turns)
+        picked = pick_shapes(shapes, cue)
+        if picked:
+            brief += ["", "## 口语示例（照形状学，词句全换成本剧的人和事，不照抄）", ""]
+            for s in picked:
+                brief += [f"**{s['scene']}·{s['technique']}**", *[f"> {w}：{x}" for w, x in s["example"]], f"（{s['note']}）", ""]
+        bad = counter_examples(os.path.dirname(os.path.abspath(args.out)), args.out)
+        if bad:
+            brief += ["", "## 别写成这样（本项目被拦下、被用户圈出来的写法）", "", *[f"- {x}" for x in bad], ""]
         brief += packet_extras(args.out, n, roster.get(n, set()))
         with open(paths["brief"], "w", encoding="utf-8") as f:
             f.write("\n".join(brief) + "\n")
@@ -1090,6 +1263,22 @@ def voiceless_leads(P, m, window, cast):
     return [x for x in leads if not any(x in s and VOICE_SAMPLE.search(s) for s in secs)]
 
 
+TONE_HEAD = re.compile(r"^#{1,3}\s*称呼和口吻")
+
+
+def tone_rows(bible, names=None):
+    """圣经「## 称呼和口吻」表的行（| 谁 | 对谁 | 称呼 | 口吻 |）；给了 names 只要两头都在场的。"""
+    m = re.search(r"(?ms)^#{1,3}\s*称呼和口吻.*?(?=^#{1,3}\s|\Z)", bible)
+    rows = []
+    for l in (m.group(0).splitlines() if m else []):
+        cells = [c.strip() for c in l.strip().strip("|").split("|")]
+        if len(cells) < 4 or not l.strip().startswith("|") or set("".join(cells[:2])) <= set("-: ") or cells[0] == "谁":
+            continue
+        if names is None or (any(x in cells[0] for x in names) and any(x in cells[1] for x in names)):
+            rows.append(l.strip())
+    return rows
+
+
 def _read(path):
     if not os.path.exists(path):
         return ""
@@ -1104,10 +1293,14 @@ def packet_extras(out, n, names, cap=4000):
     bible = _read(os.path.join(P, "bible.md"))
     if bible:
         # 按小节摘：一个人的说话特点和示例台词常常不和名字在同一段，按空行切会把示例台词切丢
-        secs = _sections(bible)
+        secs = [s for s in _sections(bible) if not TONE_HEAD.match(s.strip())]
         keep = bible if len(bible) <= cap else "\n\n".join(s for s in secs if any(x in s for x in names))[:cap]
         parts += ["## 圣经：本集出场的人" + ("" if len(bible) <= cap else "（只摘了本集出场的人，别的要用再读 bible.md）"),
-                  "", "每个人照自己的「说话」和「示例台词」写，盖住名字也要听得出是谁在说。", "", keep or bible[:cap], ""]
+                  "", "每个人照自己的「说话」「口头禅」「方言词」「不说的词」和「示例台词」写，盖住名字也要听得出是谁在说。", "",
+                  keep or bible[:cap], ""]
+        rows = tone_rows(bible, names)
+        if rows:
+            parts += ["## 谁对谁怎么说（本集出场的人之间）", "", "| 谁 | 对谁 | 称呼 | 口吻 |", "|---|---|---|---|", *rows, ""]
     smap = _read(os.path.join(P, "season-map.md"))
     if smap:
         if len(smap) <= cap:
@@ -1241,14 +1434,27 @@ def cmd_check(args):
     _, g = _run(cmd_gate, draft=args.draft, extract=ex, sheet=sh, impl=args.impl, pair_out=None,
                 min_line_ratio=0.7, min_speech_ratio=0.6, max_speech_ratio=1.3)
     out += g.get("problems", [])
+    one_turn = ONE_TURN in text
+    # 连说几轮的上限照原剧：原剧这集同一人最多连说几轮，新剧也可以（至少 3）
+    run_cap = 3
+    if one_turn:
+        for n in split_episodes(text):
+            run, prev = 0, None
+            for t in source_turns(ex, n):
+                run = run + 1 if t["speaker"] == prev else 1
+                prev = t["speaker"]
+                run_cap = max(run_cap, run)
     _, v = _run(cmd_voice, draft=args.draft, min_total=args.min_total, min_speech=None,
-                max_speech=round(args.sec * CHARS_PER_SEC * 1.1) if args.sec else None, max_tics=0, max_run=3)
+                max_speech=round(args.sec * CHARS_PER_SEC * 1.1) if args.sec else None, max_tics=0, max_run=run_cap)
     out += [f"第{x['ep']}集：{'；'.join(x['why'])}" for x in v.get("failed", [])]
-    out += [f"{at(lambda x, l=l: l.strip() and l.strip() in x)} AI 腔「{t}」：{l}"
-            for r in v.get("episodes", []) for t, l in r.get("aiTics", [])]
+    tics = [(t, l) for r in v.get("episodes", []) for t, l in r.get("aiTics", [])]
+    out += [f"{at(lambda x, l=l: l.strip() and l.strip() in x)} AI 腔「{t}」：{l}" for t, l in tics]
+    rejected = [{"kind": f"AI 腔「{t}」", "text": l} for t, l in tics]
     _, r = _run(cmd_rules, draft=args.draft, max_speakers=4, max_han=20, require_annotation=False)
     out += [f"{x['scene']} 说话人 {len(x['speakers'])} 个：{'、'.join(x['speakers'])}" for x in r.get("tooManySpeakers", [])]
-    out += [f"第 {x['line']} 行 {x['speaker']} 台词 {x['han']} 字，拆成两行或删短" for x in r.get("tooLong", [])]
+    out += [f"第 {x['line']} 行 {x['speaker']} 有一小句 {x['han']} 字，中间没有标点断不开：加个逗号，或者删短"
+            if x.get("clause") else f"第 {x['line']} 行 {x['speaker']} 台词 {x['han']} 字，拆成两行或删短"
+            for x in r.get("tooLong", [])]
     out += [f"第 {x['line']} 行写了画面「{x['term']}」，删掉：{x['text']}" for x in r.get("visual", [])]
     out += [f"第 {x['line']} 行写了外貌「{x['term']}」，删掉（形象以资产为准）：{x['text']}" for x in r.get("appearance", [])]
     out += [f"第 {x['line']} 行不是标准剧本行：{x['text']}" for x in r.get("format", [])]
@@ -1267,11 +1473,20 @@ def cmd_check(args):
     for n, body in split_episodes(text).items():
         for k, c in stock_uses(body).items():
             near = [m for m in others.get(k, []) if 0 < n - m < STOCK_GAP]
-            where = at(lambda l, rx=STOCK_RE[k]: bool(rx.search(l)) and (l.strip().startswith("△") or "（" in l))
+            spot = lambda l, rx=STOCK_RE[k]: bool(rx.search(l)) and (l.strip().startswith("△") or "（" in l)
+            where = at(spot)
+            if c > 1 or near:
+                rejected += [{"kind": f"套路反应「{k}」", "text": l.strip()[:30]} for l in lines if spot(l)][:2]
             if c > 1:
                 out.append(f"{where} 第{n}集「{k}」这类反应用了 {c} 次，一集只留一次，其余换成这个人自己的动作或一句话")
             elif near:
                 out.append(f"{where} 第{n}集又用了「{k}」这类反应，第{near[-1]}集刚用过（{STOCK_GAP} 集内不重复），换成这个人自己的反应")
+    # 潜台词：骨架里每拍一行，写台词之前先填。没填的台词多半是把信息直说出来
+    if args.impl and os.path.exists(args.impl):
+        out += [f"实现表 {b} 的「潜台词」还空着：先写这个人这一拍想要什么、什么话不能直说，再照它改台词"
+                for b, w in SUBTEXT.findall(_read(args.impl)) if not w.strip()]
+    if rejected:
+        record_rejected(os.path.dirname(os.path.abspath(args.draft)), rejected)
     # 只给前 20 条：改完再跑一次就会报剩下的，一次贴几十条只是让每一轮的上下文更长
     rep = {"passed": not out, "count": len(out), "fix": out[:20]}
     if len(out) > 20:
@@ -1369,7 +1584,11 @@ def cmd_next(args):
     mute = voiceless_leads(P, m, window, cast)
     if mute:
         return say("3 地图", f"bible.md 里这些主要人物还没有示例台词：{'、'.join(mute)}。在每人的小节里补「说话：」一行"
-                   "（句子长短、口头禅、方言词、怎么骂人怎么服软）和「示例台词：」2-3 句，各人之间要听得出差别。任务包会按本集出场的人带上。")
+                   "（句子长短、口头禅、方言词、怎么骂人怎么服软、这个人绝不会说的词）和「示例台词：」2-3 句，各人之间要听得出差别。任务包会按本集出场的人带上。")
+    if len(set(cast.values())) >= 2 and not tone_rows(_read(os.path.join(P, "bible.md"))):
+        return say("3 地图", "bible.md 还没有「## 称呼和口吻」表。加一节，一行一对人：| 谁 | 对谁 | 称呼 | 口吻 |，"
+                   "比如「| 沈竞 | 骆承业 | 骆哥 | 客气里压着，不叫全名 |」。主要人物之间两两都写，对长辈、仇人、手下各不一样。"
+                   "任务包只带本集在场的那几行，写手照着叫人、照着口气说。")
     approved = os.path.join(P, "approved-sample.txt")
     out = os.path.join(P, "out")
     sheet_eps = {e["ep"]: e for e in load_sheet(ba).get("episodes", [])}
@@ -1641,7 +1860,8 @@ def cmd_deliver(args):
         if draft in done:  # 老的批次文件一份里有好几集，只合一次
             continue
         done.add(draft)
-        body.append(COMMENT.sub("", open(draft, encoding="utf-8").read()).strip())
+        # 一轮一行的稿子在这里按标点拆成 ≤20 字的行：写手只管把话说顺，拆行是脚本的活
+        body.append(split_speech_lines(COMMENT.sub("", open(draft, encoding="utf-8").read())).strip())
         if os.path.exists(impl):
             impls.append(open(impl, encoding="utf-8").read().strip())
     merged = f"# 《{t}》\n\n## 人物小传\n\n{bios}\n\n## 正文\n\n" + "\n\n".join(body) + "\n"
@@ -1812,6 +2032,9 @@ def main():
     p.add_argument("--max-speakers", type=int, default=4)
     p.add_argument("--max-han", type=int, default=20)
     p.add_argument("--require-annotation", action="store_true", help="项目要求句句带括注时才开")
+    p.add_argument("--splittable", action="store_true", help="只看每个小句（交付时按标点拆行）；一轮一行的稿子自动开")
+    p = sub.add_parser("library", help="校验口语形状库 library/oral-shapes.json")
+    p.add_argument("--workspace", help="原剧工作区，有专用的 oral-shapes.json 就一起校验")
     p = sub.add_parser("dup", help="字面查重：列出与原剧语料重合的 k 字片段")
     p.add_argument("draft")
     p.add_argument("source")
@@ -1837,7 +2060,7 @@ def main():
                 "source": cmd_source, "gate": cmd_gate, "next": cmd_next, "scaffold": cmd_scaffold,
                 "cast": cmd_cast, "brief": cmd_brief, "check": cmd_check, "presence": cmd_presence,
                 "progress": cmd_progress, "init": workspace.cmd_init, "title-check": workspace.cmd_title_check,
-                "variant": workspace.cmd_variant, "deliver": cmd_deliver, "seam": cmd_seam}[args.cmd](args)
+                "variant": workspace.cmd_variant, "deliver": cmd_deliver, "seam": cmd_seam, "library": cmd_library}[args.cmd](args)
     except (OSError, ValueError, KeyError) as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
         return 1

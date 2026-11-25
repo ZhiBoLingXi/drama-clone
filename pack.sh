@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 
 ver=$(sed -n 's/^  version: *//p' SKILL.md | head -1)
 [ -n "$ver" ] || { echo "SKILL.md 里没找到 version" >&2; exit 1; }
-SKILL_FILES=(SKILL.md references scripts templates requirements-docx.txt)
+SKILL_FILES=(SKILL.md references scripts templates library requirements-docx.txt)
 
 rm -rf dist/build workbuddy/skills
 mkdir -p dist/build/drama-clone workbuddy/skills/drama-clone
